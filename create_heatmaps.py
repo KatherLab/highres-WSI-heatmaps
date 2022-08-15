@@ -83,7 +83,7 @@ tfms = transforms.Compose([
 # load base fully convolutional model (w/o pooling / flattening or head)
 base_model = ResNet.resnet50(num_classes=128, mlp=False,
                              two_branch=False, normlinear=True)
-pretext_model = torch.load('./xiyue-wang.pth')
+pretext_model = torch.load('/home/mvantreeck/Documents/marugoto/xiyue-wang.pth')
 base_model.avgpool = nn.Identity()
 base_model.flatten = nn.Identity()
 base_model.fc = nn.Identity()
@@ -91,66 +91,87 @@ base_model.load_state_dict(pretext_model, strict=True)
 base_model.eval()
 
 # transform MIL model into fully convolutional equivalent
-learn = load_learner('/home/mvantreeck/Downloads/export.pkl')
+learn = load_learner('/home/mvantreeck/Documents/marugoto/train-tcga-xiyue/export.pkl')
 att = nn.Sequential(
+    #nn.AvgPool2d(7, 1, padding=3),
     linear_to_conv2d(learn.encoder[0]),
     nn.ReLU(),
     linear_to_conv2d(learn.attention[0]),
     nn.Tanh(),
     linear_to_conv2d(learn.attention[2]),
-)
+).cuda()
 score = nn.Sequential(
+    #nn.AvgPool2d(7, 1, padding=3),
     linear_to_conv2d(learn.encoder[0]),
     nn.ReLU(),
     linear_to_conv2d(learn.head[3]),
-)
+).cuda()
 
 
-for slide_name in ["LUEDDE_HEART_HTx_IMG_H022557_19"]:
+for slide_name in ['DA-F-0129-TU.svs', 'DA-F-0163-TU.svs', 'DA-F-0163_TU.svs', 'DA-F-0277-TU.svs', 'DA-F-0333-TU.svs', 'DA-F-0337-TU.svs', 'DA-F-0363-TU.svs', 'DA-F-0373-TU.svs', 'DA-F-0466-NG.svs', 'DA-F-0466-TU.svs', 'DA-F-0487-NG.svs', 'DA-F-0487-TU.svs', 'DA-F-0589-TU-NG.svs', 'DA-F-0960-NG.svs', 'DA-F-0960-TU.svs', 'DA-F-1385-NG.svs', 'DA-F-1385-TU.svs', 'DA-F-3032-TU.svs', 'DA-F-2069-TU-NG.svs', 'DA-F-2085-NG.svs', 'DA-F-2085-TU.svs',]:
     slide_path = Path(
-        '/mnt/Jupiter_05_DEEP_LIVER_A/LUEDDE-HEART-HTx/LUEDDE-HEART-HTX-IMGS')/f'{slide_name}.svs'
+        '/mnt/Saturn_02_JAKOB_protocol/DACHS-CRCFULL-DX-IMGS')/slide_name
     print(slide_path)
     slide = openslide.OpenSlide(str(slide_path))
     outdir = Path('heatmaps')/slide_path.stem
     outdir.mkdir(parents=True, exist_ok=True)
 
     # load WSI as one image
-    slide_t = load_slide(slide)
-    PIL.Image.fromarray(slide_t).save(outdir/f'{slide_path.stem}.jpg')
+    if (outdir/'slide.pt').exists():
+        slide_t = torch.load(outdir/'slide.pt')
+    else:
+        slide_t = load_slide(slide)
+        torch.save(slide_t, outdir/'slide.pt')
+        PIL.Image.fromarray(slide_t).save(outdir/f'{slide_path.stem}.jpg')
 
     # pass the WSI through the fully convolutional network
     # since our RAM is still too small, we do this in two steps
     # (if you run out of RAM, try upping the number of slices)
-    no_slices = 2
-    step = slide_t.shape[1]//no_slices
-    slices = []
-    for slice_i in range(no_slices):
-        x = tfms(slide_t[:, slice_i*step:(slice_i+1)*step, :])
-        with torch.inference_mode():
-            slices.append(base_model(x.unsqueeze(0)))
-    feat_t = torch.concat(slices, 3).squeeze()
-    # save the features (large)
-    torch.save(feat_t, outdir/'feats.pkl')
+    if (outdir/'feats.pt').exists():
+        feat_t = torch.load(outdir/'feats.pt')
+        feat_t = feat_t.float()
+    else:
+        no_slices = 2
+        step = slide_t.shape[1]//no_slices
+        slices = []
+        for slice_i in range(no_slices):
+            x = tfms(slide_t[:, slice_i*step:(slice_i+1)*step, :])
+            with torch.inference_mode():
+                slices.append(base_model(x.unsqueeze(0)))
+        feat_t = torch.concat(slices, 3).squeeze()
+        # save the features (large)
+        torch.save(feat_t, outdir/'feats.pt')
+
 
     # calculate the attentions / scores according to the MIL model
     with torch.inference_mode():
-        att_map = att(feat_t).squeeze()
-        lower = torch.quantile(att_map, .01)
+        att_map = att(feat_t.cuda()).squeeze()
+        lower, upper = torch.quantile(att_map, .01), torch.quantile(att_map, .99)
         att_map = att_map.where(att_map > lower, lower)
+        att_map = att_map.where(att_map < upper, upper)
         att_map -= att_map.min()
         att_map /= att_map.max()
+        att_map = att_map.cpu()
 
-        score_map = score(feat_t).squeeze()
-        score_map = torch.softmax(score_map, 0)
+        score_map = score(feat_t.cuda()).squeeze()
+        score_map = torch.softmax(score_map, 0).cpu()
 
     att_map_im = PIL.Image.fromarray(
-        np.uint8(plt.get_cmap('coolwarm')(att_map)*255.)).convert('RGB')
+        np.uint8(plt.get_cmap('viridis')(att_map)*255.)).convert('RGB')
     att_map_im.save(outdir/'attention.png')
     slide_im = PIL.Image.fromarray(slide_t)
     PIL.Image.blend(slide_im, att_map_im.resize(slide_im.size),
                     0.75).save(outdir/'attention_overlayed.jpg')
-    im = plt.get_cmap('coolwarm')(score_map[1])
-    im[:, :, 3] = att_map * .8
+    im = plt.get_cmap('coolwarm')(score_map[0])
+
+    # TODO find good name for x
+    x = score_map[1] - 0.5
+    x /= torch.quantile(x.abs(), .95) * 2
+    x += 0.5
+    x = x.where(x > 0, torch.tensor(0))
+    x = x.where(x < 1, torch.tensor(1))
+    im = plt.get_cmap('coolwarm')(x)
+    im[:, :, 3] = att_map
     map_im = PIL.Image.fromarray(np.uint8(im*255.))
     map_im.save(outdir/'map.png')
     map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
