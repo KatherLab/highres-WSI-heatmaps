@@ -1,32 +1,65 @@
-#!/usr/bin/env pyhton3
-# %%
+#!/usr/bin/env python3
+import argparse
+import io
 from pathlib import Path
 import sys
 from typing import Dict, Tuple
+from concurrent import futures
+
+
+# loading all the below packages takes quite a bit of time, so get cli parsing
+# out of the way beforehand so it's more responsive in case of errors
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Create heatmaps for MIL models.')
+    parser.add_argument('slide_paths', metavar='SLIDE', type=Path,
+                        nargs='+', help='slides to create heatmaps for')
+    parser.add_argument('-m', '--model-path', type=Path, required=True,
+                        help='MIL model used to generate attention / score maps')
+    parser.add_argument('-o', '--output-path', type=Path, required=True,
+                        help='path to save results to')
+    parser.add_argument('--no-pool', action='store_true',
+                        help='do not average pool features after feature extraction phase')
+    threshold_group = parser.add_argument_group(
+        'thresholds', 'thresholds for scaling attention / score values')
+    parser.add_argument('--mask-threshold', metavar='THRESH', type=int, default=224,
+                        help='brightness threshold for background removal.')
+    threshold_group.add_argument('--att-upper-threshold', metavar='THRESH', type=float, default=1.,
+                              help='quantile to squash attention from during attention scaling '
+                              ' (e.g. 0.99 will lead to the top 1%% of attention scores to become 1)')
+    threshold_group.add_argument('--att-lower-threshold', metavar='THRESH', type=float, default=.01,
+                              help='quantile to squash attention to during attention scaling '
+                              ' (e.g. 0.01 will lead to the bottom 1%% of attention scores to become 0)')
+    threshold_group.add_argument('--score-threshold', metavar='THRESH', type=float, default=.95,
+                              help='quantile to consider in score scaling '
+                              '(e.g. 0.95 will discard the top / bottom 5%% of score values as outliers)')
+    args = parser.parse_args()
+    assert args.att_upper_threshold >= 0 and args.att_upper_threshold <= 1, \
+        'threshold needs to be between 0 and 1.'
+    assert args.att_lower_threshold >= 0 and args.att_lower_threshold <= 1, \
+        'threshold needs to be between 0 and 1.'
+    assert args.att_lower_threshold < args.att_upper_threshold, \
+        'lower attention threshold needs to be lower than upper attention threshold.'
+
+
 if (p := './RetCCL') not in sys.path:
     sys.path = [p] + sys.path
-
 import ResNet
+
 import torch.nn as nn
 import torch
 from torchvision import transforms
-import math
 import os
-from concurrent import futures
 from matplotlib import pyplot as plt
 import openslide
-import PIL
 from tqdm import tqdm
 import numpy as np
 from fastai.vision.all import load_learner
-import pandas as pd
+from pyzstd import ZstdFile
+import PIL
 
-# use all the threads
-torch.set_num_threads(os.cpu_count())
-torch.set_num_interop_threads(os.cpu_count())
+# supress DecompressionBombWarning: yes, our files are really that big
+PIL.Image.MAX_IMAGE_PIXELS = None
 
-
-slide_dir = Path('/mnt/Sirius_02_empty/CPTAC_IMGS_PATH/CPTAC_BRCA')
 
 def _load_tile(
     slide: openslide.OpenSlide, pos: Tuple[int, int], stride: Tuple[int, int], target_size: Tuple[int, int]
@@ -58,7 +91,7 @@ def load_slide(slide: openslide.OpenSlide, target_mpp: float = 256/224) -> np.nd
 
         # write the loaded tiles into an image as soon as they are loaded
         im = np.zeros((*(tile_target_size*steps)[::-1], 3), dtype=np.uint8)
-        for tile_future in tqdm(futures.as_completed(future_coords), total=steps*steps):
+        for tile_future in tqdm(futures.as_completed(future_coords), total=steps*steps, desc='Loading WSI', leave=False):
             i, j = future_coords[tile_future]
             tile = tile_future.result()
             x, y = tile_target_size * (j, i)
@@ -78,91 +111,156 @@ def linear_to_conv2d(linear):
     return conv
 
 
-tfms = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-])
+if __name__ == '__main__':
+    # use all the threads
+    torch.set_num_threads(os.cpu_count())
+    torch.set_num_interop_threads(os.cpu_count())
 
-# load base fully convolutional model (w/o pooling / flattening or head)
-base_model = ResNet.resnet50(num_classes=128, mlp=False,
-                             two_branch=False, normlinear=True)
-pretext_model = torch.load('./xiyue-wang.pth')
-base_model.avgpool = nn.Identity()
-base_model.flatten = nn.Identity()
-base_model.fc = nn.Identity()
-base_model.load_state_dict(pretext_model, strict=True)
-base_model.eval()
+    # default imgnet transforms
+    tfms = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ])
 
+    # load base fully convolutional model (w/o pooling / flattening or head)
+    # In this case we're loading the xiyue wang RetCLL model, change this bit for other networks
+    base_model = ResNet.resnet50(num_classes=128, mlp=False,
+                                 two_branch=False, normlinear=True)
+    pretext_model = torch.load('./xiyue-wang.pth')
+    base_model.avgpool = nn.Identity()
+    base_model.flatten = nn.Identity()
+    base_model.fc = nn.Identity()
+    base_model.load_state_dict(pretext_model, strict=True)
+    base_model.eval()
 
-for csv in Path('/home/mvantreeck/Downloads/BRCA').glob('*.csv'):
-    target = csv.name.split('-', 1)[0]
-    df = pd.read_csv(csv).nsmallest(5, columns='loss')
-    for _, (patient_name, preds_path) in df[['patient', 'path']].iterrows():
-        fold = Path(preds_path).parent.name
-        for slide_path in tqdm([slide for slide in slide_dir.glob('*.svs') if patient_name[1:] in slide.name]):
-            print(slide_path)
-            slide = openslide.OpenSlide(str(slide_path))
-            outdir = Path('/mnt/Sirius_02_empty/Oliver_TCGA_runs/BRCA/val_mil_multitarget/')/target/fold/csv.name/slide_path.stem
-            outdir.mkdir(parents=True, exist_ok=True)
-            print(f'saving to {outdir}')
+    # transform MIL model into fully convolutional equivalent
+    learn = load_learner(args.model_path)
+    att = nn.Sequential(
+        nn.Identity() if args.no_pool else nn.AvgPool2d(7, 1, padding=3),
+        linear_to_conv2d(learn.encoder[0]),
+        nn.ReLU(),
+        linear_to_conv2d(learn.attention[0]),
+        nn.Tanh(),
+        linear_to_conv2d(learn.attention[2]),
+    )
+    score = nn.Sequential(
+        nn.Identity() if args.no_pool else nn.AvgPool2d(7, 1, padding=3),
+        linear_to_conv2d(learn.encoder[0]),
+        nn.ReLU(),
+        linear_to_conv2d(learn.head[3]),
+    )
 
-            # transform MIL model into fully convolutional equivalent
-            learn = load_learner(Path('/mnt/Sirius_02_empty/Oliver_TCGA_runs/BRCA/mil_multitarget')/target/fold/'export.pkl')
-            att = nn.Sequential(
-                nn.AvgPool2d(7, 1),
-                linear_to_conv2d(learn.encoder[0]),
-                nn.ReLU(),
-                linear_to_conv2d(learn.attention[0]),
-                nn.Tanh(),
-                linear_to_conv2d(learn.attention[2]),
-            )
-            score = nn.Sequential(
-                nn.AvgPool2d(7, 1),
-                linear_to_conv2d(learn.encoder[0]),
-                nn.ReLU(),
-                linear_to_conv2d(learn.head[3]),
-            )
+    # we operate in two steps: we first collect all attention values / scores,
+    # the entirety of which we then calculate our scaling parameters from.  Only
+    # then we output the actual maps.
+    attention_maps: Dict[Path, torch.Tensor] = {}
+    score_maps: Dict[Path, torch.Tensor] = {}
+    masks: Dict[Path, torch.Tensor] = {}
 
-            # load WSI as one image
-            slide_t = load_slide(slide)
-            PIL.Image.fromarray(slide_t).save(outdir/f'{slide_path.stem}.jpg')
+    print('Extracting features, attentions and scores...')
+    for slide_path in (progress := tqdm(args.slide_paths, leave=False)):
+        progress.set_description(slide_path.stem)
+        slide = openslide.OpenSlide(str(slide_path))
+        slide_outdir = args.output_path/slide_path.stem
+        slide_outdir.mkdir(parents=True, exist_ok=True)
 
-            # pass the WSI through the fully convolutional network
-            # since our RAM is still too small, we do this in two steps
-            # (if you run out of RAM, try upping the number of slices)
-            no_slices = 2
-            step = slide_t.shape[1]//no_slices
+        # Load WSI as one image
+        if (slide_jpg := slide_outdir/'slide.jpg').exists():
+            slide_array = np.array(PIL.Image.open(slide_jpg))
+        else:
+            slide_array = load_slide(slide)
+            PIL.Image.fromarray(slide_array).save(slide_jpg)
+
+        # pass the WSI through the fully convolutional network'
+        # since our RAM is still too small, we do this in two steps
+        # (if you run out of RAM, try upping the number of slices)
+        if (feats_pt := slide_outdir/'feats.pt.zst').exists():
+            with ZstdFile(feats_pt, mode='rb') as fp:
+                feat_t = torch.load(io.BytesIO(fp.read()))
+            feat_t = feat_t.float()
+        else:
+            no_slices = 1
+            step = slide_array.shape[1]//no_slices
             slices = []
             for slice_i in range(no_slices):
-                x = tfms(slide_t[:, slice_i*step:(slice_i+1)*step, :])
+                x = tfms(slide_array[:, slice_i*step:(slice_i+1)*step, :])
                 with torch.inference_mode():
                     slices.append(base_model(x.unsqueeze(0)))
             feat_t = torch.concat(slices, 3).squeeze()
-            # save the features (large)
-            torch.save(feat_t, outdir/'feats.pkl')
+            # save the features (with compression)
+            with ZstdFile(feats_pt, mode='wb') as fp:
+                torch.save(feat_t, fp)
 
-            # calculate the attentions / scores according to the MIL model
-            with torch.inference_mode():
-                att_map = att(feat_t).squeeze()
-                lower = torch.quantile(att_map, .01)
-                att_map = att_map.where(att_map > lower, lower)
-                att_map -= att_map.min()
-                att_map /= att_map.max()
+        # calculate attention / classification scores according to the MIL model
+        with torch.inference_mode():
+            att_map = att(feat_t).squeeze()
+            score_map = score(feat_t).squeeze()
+            score_map = torch.softmax(score_map, 0).cpu()
+            if score_map.shape[0] != 2:
+                raise NotImplementedError(
+                    'only binary models supported so far')
 
-                score_map = score(feat_t).squeeze()
-                score_map = torch.softmax(score_map, 0)
+        # compute foreground mask
+        mask = np.array(PIL.Image.fromarray(slide_array).resize(
+            att_map.shape[::-1]).convert('L')) < args.mask_threshold
 
-            att_map_im = PIL.Image.fromarray(
-                np.uint8(plt.get_cmap('coolwarm')(att_map)*255.)).convert('RGB')
-            att_map_im.save(outdir/'attention.png')
-            slide_im = PIL.Image.fromarray(slide_t)
-            PIL.Image.blend(slide_im, att_map_im.resize(slide_im.size),
-                            0.75).save(outdir/'attention_overlayed.jpg')
-            im = plt.get_cmap('coolwarm')(score_map[1])
-            im[:, :, 3] = att_map * .8
-            map_im = PIL.Image.fromarray(np.uint8(im*255.))
-            map_im.save(outdir/'map.png')
-            map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
-            x = slide_im.copy().convert('RGBA')
-            x.paste(map_im, mask=map_im)
-            x.convert('RGB').save(outdir/'map_overlayed.jpg')
+        attention_maps[slide_path] = att_map
+        score_maps[slide_path] = score_map
+        masks[slide_path] = mask
+
+    # now we can use all of the features to calculate the scaling factors
+    all_attentions = torch.cat(
+        [attention_maps[s].view(-1)[masks[s].reshape(-1)] for s in score_maps.keys()])
+    att_lower = all_attentions.quantile(args.att_lower_threshold)
+    att_upper = all_attentions.quantile(args.att_upper_threshold)
+
+    all_scores = torch.cat([
+        # mask out background scores, then linearize them
+        score_maps[s].view(2, -1) \
+            .permute(1, 0)[masks[s].reshape(-1)] \
+            .permute(1, 0)
+        for s in score_maps.keys()],
+        dim=1)
+    centered_score = all_scores[0] - 0.5
+    scale_factor = torch.quantile(centered_score.abs(), args.score_threshold) * 2
+
+    print('Writing heatmaps...')
+    for slide_path in (progress := tqdm(args.slide_paths, leave=False)):
+        progress.set_description(slide_path.stem)
+        slide_outdir = args.output_path/slide_path.stem
+
+        slide_im = PIL.Image.open(slide_outdir/'slide.jpg')
+        mask = masks[slide_path]
+
+        # attention map
+        att_map = (attention_maps[slide_path] -
+                   att_lower) / (att_upper - att_lower)
+        att_map = att_map.clamp(0, 1)
+
+        # bare
+        im = plt.get_cmap('viridis')(att_map)
+        im[:, :, 3] = mask
+        PIL.Image.fromarray(
+            np.uint8(im*255.)).save(slide_outdir/'attention.png')
+        # attention map (blended with slide)
+        im[:, :, 3] *= .5
+        map_im = PIL.Image.fromarray(np.uint8(im*255.))
+        map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
+        x = slide_im.copy().convert('RGBA')
+        x.paste(map_im, mask=map_im)
+        x.convert('RGB').save(slide_outdir/'attention_overlayed.jpg')
+
+        # score map
+        scaled_score_map = (score_maps[slide_path][0] - .5) / scale_factor + .5
+        scaled_score_map = (scaled_score_map * mask).clamp(0, 1)
+
+        # create image with RGB from scores, Alpha from attention
+        im = plt.get_cmap('coolwarm')(scaled_score_map)
+        im[:, :, 3] = att_map * mask
+        map_im = PIL.Image.fromarray(np.uint8(im*255.))
+        map_im.save(slide_outdir/'map.png')
+        # overlayed onto slide
+        map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
+        x = slide_im.copy().convert('RGBA')
+        x.paste(map_im, mask=map_im)
+        x.convert('RGB').save(slide_outdir/'map_overlayed.jpg')
