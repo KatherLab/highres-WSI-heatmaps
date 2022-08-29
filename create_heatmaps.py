@@ -17,6 +17,8 @@ if __name__ == '__main__':
                         help='MIL model used to generate attention / score maps')
     parser.add_argument('-o', '--output-path', type=Path, required=True,
                         help='path to save results to')
+    parser.add_argument('-t', '--true-class', type=str, required=True,
+                        help='class to be rendered as "hot" in the heatmap')
     parser.add_argument('--no-pool', action='store_true',
                         help='do not average pool features after feature extraction phase')
     threshold_group = parser.add_argument_group(
@@ -135,6 +137,11 @@ if __name__ == '__main__':
 
     # transform MIL model into fully convolutional equivalent
     learn = load_learner(args.model_path)
+    classes = learn.dls.train.dataset._datasets[-1].encode.categories_[0]
+    assert args.true_class in classes, \
+        f'{args.true_class} not a target of {args.model_path}! ' \
+        f'(Did you mean any of {list(classes)}?)'
+    true_class_idx = (classes == args.true_class).argmax()
     att = nn.Sequential(
         nn.Identity() if args.no_pool else nn.AvgPool2d(7, 1, padding=3),
         linear_to_conv2d(learn.encoder[0]),
@@ -221,7 +228,7 @@ if __name__ == '__main__':
             .permute(1, 0)
         for s in score_maps.keys()],
         dim=1)
-    centered_score = all_scores[0] - 0.5
+    centered_score = all_scores[true_class_idx] - 0.5
     scale_factor = torch.quantile(centered_score.abs(), args.score_threshold) * 2
 
     print('Writing heatmaps...')
@@ -233,11 +240,11 @@ if __name__ == '__main__':
         mask = masks[slide_path]
 
         # attention map
-        att_map = (attention_maps[slide_path] -
-                   att_lower) / (att_upper - att_lower)
+        att_map = (attention_maps[slide_path] - att_lower) \
+                / (att_upper - att_lower)
         att_map = att_map.clamp(0, 1)
 
-        # bare
+        # bare attention
         im = plt.get_cmap('viridis')(att_map)
         im[:, :, 3] = mask
         PIL.Image.fromarray(
@@ -251,7 +258,7 @@ if __name__ == '__main__':
         x.convert('RGB').save(slide_outdir/'attention_overlayed.jpg')
 
         # score map
-        scaled_score_map = (score_maps[slide_path][0] - .5) / scale_factor + .5
+        scaled_score_map = (score_maps[slide_path][true_class_idx] - .5) / scale_factor + .5
         scaled_score_map = (scaled_score_map * mask).clamp(0, 1)
 
         # create image with RGB from scores, Alpha from attention
