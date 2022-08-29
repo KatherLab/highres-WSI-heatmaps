@@ -45,6 +45,10 @@ if __name__ == '__main__':
                                 help='color map to use for the attention heatmap')
     colormap_group.add_argument('--score-cmap', metavar='CMAP', type=str, default='coolwarm',
                                 help='color map to use for the score heatmap')
+    colormap_group.add_argument('--att-alpha', metavar='ALPHA', type=float, default=.5,
+                                help='opaqueness of attention map')
+    colormap_group.add_argument('--score-alpha', metavar='ALPHA', type=float, default=1.,
+                                help='opaqueness of score map at highest-attention location')
     args = parser.parse_args()
     if not args.cache_dir:
         warnings.warn(
@@ -184,8 +188,6 @@ if __name__ == '__main__':
     for slide_path in (progress := tqdm(args.slide_paths, leave=False)):
         progress.set_description(slide_path.stem)
         slide = openslide.OpenSlide(str(slide_path))
-        slide_outdir = args.output_path/slide_path.stem
-        slide_outdir.mkdir(parents=True, exist_ok=True)
         slide_cache_dir = args.cache_dir/slide_path.stem
         slide_cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -205,7 +207,7 @@ if __name__ == '__main__':
                 feat_t = torch.load(io.BytesIO(fp.read()))
             feat_t = feat_t.float()
         else:
-            no_slices = 2
+            no_slices = 3
             step = slide_array.shape[1]//no_slices
             slices = []
             for slice_i in range(no_slices):
@@ -256,6 +258,9 @@ if __name__ == '__main__':
 
     print('Writing heatmaps...')
     for slide_path in (progress := tqdm(args.slide_paths, leave=False)):
+        slide_outdir = args.output_path/slide_path.stem
+        slide_outdir.mkdir(parents=True, exist_ok=True)
+
         progress.set_description(slide_path.stem)
         slide_outdir = args.output_path/slide_path.stem
 
@@ -276,7 +281,7 @@ if __name__ == '__main__':
         PIL.Image.fromarray(
             np.uint8(im*255.)).save(slide_outdir/'attention.png')
         # attention map (blended with slide)
-        im[:, :, 3] *= .5
+        im[:, :, 3] *= args.att_alpha
         map_im = PIL.Image.fromarray(np.uint8(im*255.))
         map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
         x = slide_im.copy().convert('RGBA')
@@ -289,7 +294,7 @@ if __name__ == '__main__':
 
         # create image with RGB from scores, Alpha from attention
         im = plt.get_cmap(args.score_cmap)(scaled_score_map)
-        im[:, :, 3] = att_map * mask
+        im[:, :, 3] = att_map * mask * args.score_alpha
         map_im = PIL.Image.fromarray(np.uint8(im*255.))
         map_im.save(slide_outdir/'map.png')
         # overlayed onto slide
