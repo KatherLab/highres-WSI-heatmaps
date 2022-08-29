@@ -3,8 +3,10 @@ import argparse
 import io
 from pathlib import Path
 import sys
+import shutil
 from typing import Dict, Tuple
 from concurrent import futures
+import warnings
 
 
 # loading all the below packages takes quite a bit of time, so get cli parsing
@@ -45,6 +47,10 @@ if __name__ == '__main__':
                                 help='color map to use for the score heatmap')
     args = parser.parse_args()
     if not args.cache_dir:
+        warnings.warn(
+            'no cache directory specified! If you are generating heat maps for multiple targets, '
+            'it is HIGHLY recommended to manually set a cache directory. This directory should be '
+            'the SAME for each run.')
         args.cache_dir = args.output_path/'cache'
 
     assert args.att_upper_threshold >= 0 and args.att_upper_threshold <= 1, \
@@ -255,7 +261,7 @@ if __name__ == '__main__':
 
         slide_im = PIL.Image.open(slide_cache_dir/'slide.jpg')
         if not (slide_outdir/'slide.jpg').exists():
-            os.symlink(slide_jpg, slide_outdir/'slide.jpg')
+            shutil.copyfile(slide_jpg, slide_outdir/'slide.jpg')
 
         mask = masks[slide_path]
 
