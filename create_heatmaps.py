@@ -21,9 +21,11 @@ if __name__ == '__main__':
                         help='class to be rendered as "hot" in the heatmap')
     parser.add_argument('--no-pool', action='store_true',
                         help='do not average pool features after feature extraction phase')
+    parser.add_argument('--cache-dir', type=Path, default=None,
+                        help='directory to cache extracted features etc. in.')
     threshold_group = parser.add_argument_group(
         'thresholds', 'thresholds for scaling attention / score values')
-    parser.add_argument('--mask-threshold', metavar='THRESH', type=int, default=224,
+    threshold_group.add_argument('--mask-threshold', metavar='THRESH', type=int, default=224,
                         help='brightness threshold for background removal.')
     threshold_group.add_argument('--att-upper-threshold', metavar='THRESH', type=float, default=1.,
                               help='quantile to squash attention from during attention scaling '
@@ -42,6 +44,9 @@ if __name__ == '__main__':
     colormap_group.add_argument('--score-cmap', metavar='CMAP', type=str, default='coolwarm',
                                 help='color map to use for the score heatmap')
     args = parser.parse_args()
+    if not args.cache_dir:
+        args.cache_dir = args.output_path/'cache'
+
     assert args.att_upper_threshold >= 0 and args.att_upper_threshold <= 1, \
         'threshold needs to be between 0 and 1.'
     assert args.att_lower_threshold >= 0 and args.att_lower_threshold <= 1, \
@@ -175,23 +180,26 @@ if __name__ == '__main__':
         slide = openslide.OpenSlide(str(slide_path))
         slide_outdir = args.output_path/slide_path.stem
         slide_outdir.mkdir(parents=True, exist_ok=True)
+        slide_cache_dir = args.cache_dir/slide_path.stem
+        slide_cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Load WSI as one image
-        if (slide_jpg := slide_outdir/'slide.jpg').exists():
+        if (slide_jpg := slide_cache_dir/'slide.jpg').exists():
             slide_array = np.array(PIL.Image.open(slide_jpg))
         else:
             slide_array = load_slide(slide)
             PIL.Image.fromarray(slide_array).save(slide_jpg)
 
+
         # pass the WSI through the fully convolutional network'
         # since our RAM is still too small, we do this in two steps
         # (if you run out of RAM, try upping the number of slices)
-        if (feats_pt := slide_outdir/'feats.pt.zst').exists():
+        if (feats_pt := slide_cache_dir/'feats.pt.zst').exists():
             with ZstdFile(feats_pt, mode='rb') as fp:
                 feat_t = torch.load(io.BytesIO(fp.read()))
             feat_t = feat_t.float()
         else:
-            no_slices = 1
+            no_slices = 2
             step = slide_array.shape[1]//no_slices
             slices = []
             for slice_i in range(no_slices):
@@ -245,7 +253,10 @@ if __name__ == '__main__':
         progress.set_description(slide_path.stem)
         slide_outdir = args.output_path/slide_path.stem
 
-        slide_im = PIL.Image.open(slide_outdir/'slide.jpg')
+        slide_im = PIL.Image.open(slide_cache_dir/'slide.jpg')
+        if not (slide_outdir/'slide.jpg').exists():
+            os.symlink(slide_jpg, slide_outdir/'slide.jpg')
+
         mask = masks[slide_path]
 
         # attention map

@@ -22,10 +22,11 @@ Create heatmaps for MIL models.
 | `-o OUTPUT_PATH`, `--output-path OUTPUT_PATH` | Path to save results to. |
 | `-t TRUE_CLASS`, `--true-class TRUE_CLASS` | Class to be rendered as "hot" in the heatmap. |
 | `--no-pool` | Do not average pool features after feature extraction phase. |
-| `--mask-threshold THRESH` | Brightness threshold for background removal. |
+| `--cache-dir CACHE_DIR` | Directory to cache extracted features etc. in. |
 
 | Thresholds | Description |
 |------------|-------------|
+| `--mask-threshold THRESH` | Brightness threshold for background removal. |
 | `--att-upper-threshold THRESH` | Quantile to squash attention from during attention scaling (e.g. 0.99 will lead to the top 1% of attention scores to become 1) |
 | `--att-lower-threshold THRESH` | Quantile to squash attention to during attention scaling (e.g. 0.01 will lead to the bottom 1% of attention scores to become 0) |
 | `--score-threshold THRESH` | Quantile to consider in score scaling (e.g. 0.95 will discard the top / bottom 5% of score values as outliers) |
