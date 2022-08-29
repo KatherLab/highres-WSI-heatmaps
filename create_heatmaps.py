@@ -34,6 +34,13 @@ if __name__ == '__main__':
     threshold_group.add_argument('--score-threshold', metavar='THRESH', type=float, default=.95,
                               help='quantile to consider in score scaling '
                               '(e.g. 0.95 will discard the top / bottom 5%% of score values as outliers)')
+    colormap_group = parser.add_argument_group(
+        'colors',
+        'color maps to use for attention / score maps (see https://matplotlib.org/stable/tutorials/colors/colormaps.html)')
+    colormap_group.add_argument('--att-cmap', metavar='CMAP', type=str, default='coolwarm',
+                                help='color map to use for the attention heatmap')
+    colormap_group.add_argument('--score-cmap', metavar='CMAP', type=str, default='coolwarm',
+                                help='color map to use for the score heatmap')
     args = parser.parse_args()
     assert args.att_upper_threshold >= 0 and args.att_upper_threshold <= 1, \
         'threshold needs to be between 0 and 1.'
@@ -247,7 +254,7 @@ if __name__ == '__main__':
         att_map = att_map.clamp(0, 1)
 
         # bare attention
-        im = plt.get_cmap('viridis')(att_map)
+        im = plt.get_cmap(args.att_cmap)(att_map)
         im[:, :, 3] = mask
         PIL.Image.fromarray(
             np.uint8(im*255.)).save(slide_outdir/'attention.png')
@@ -264,7 +271,7 @@ if __name__ == '__main__':
         scaled_score_map = (scaled_score_map * mask).clamp(0, 1)
 
         # create image with RGB from scores, Alpha from attention
-        im = plt.get_cmap('coolwarm')(scaled_score_map)
+        im = plt.get_cmap(args.score_cmap)(scaled_score_map)
         im[:, :, 3] = att_map * mask
         map_im = PIL.Image.fromarray(np.uint8(im*255.))
         map_im.save(slide_outdir/'map.png')
