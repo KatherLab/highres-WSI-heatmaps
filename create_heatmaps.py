@@ -143,7 +143,6 @@ if __name__ == '__main__':
         f'(Did you mean any of {list(classes)}?)'
     true_class_idx = (classes == args.true_class).argmax()
     att = nn.Sequential(
-        nn.Identity() if args.no_pool else nn.AvgPool2d(7, 1, padding=3),
         linear_to_conv2d(learn.encoder[0]),
         nn.ReLU(),
         linear_to_conv2d(learn.attention[0]),
@@ -151,7 +150,6 @@ if __name__ == '__main__':
         linear_to_conv2d(learn.attention[2]),
     )
     score = nn.Sequential(
-        nn.Identity() if args.no_pool else nn.AvgPool2d(7, 1, padding=3),
         linear_to_conv2d(learn.encoder[0]),
         nn.ReLU(),
         linear_to_conv2d(learn.head[3]),
@@ -197,6 +195,10 @@ if __name__ == '__main__':
             # save the features (with compression)
             with ZstdFile(feats_pt, mode='wb') as fp:
                 torch.save(feat_t, fp)
+
+        # pool features, but use gaussian blur instead of avg pooling to reduce artifacts
+        if not args.no_pool:
+            feat_t = transforms.functional.gaussian_blur(feat_t, kernel_size=15)
 
         # calculate attention / classification scores according to the MIL model
         with torch.inference_mode():
