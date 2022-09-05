@@ -258,6 +258,7 @@ if __name__ == '__main__':
 
     print('Writing heatmaps...')
     for slide_path in (progress := tqdm(args.slide_paths, leave=False)):
+        slide_cache_dir = args.cache_dir/slide_path.stem
         slide_outdir = args.output_path/slide_path.stem
         slide_outdir.mkdir(parents=True, exist_ok=True)
 
@@ -266,7 +267,7 @@ if __name__ == '__main__':
 
         slide_im = PIL.Image.open(slide_cache_dir/'slide.jpg')
         if not (slide_outdir/'slide.jpg').exists():
-            shutil.copyfile(slide_jpg, slide_outdir/'slide.jpg')
+            shutil.copyfile(slide_cache_dir/'slide.jpg', slide_outdir/'slide.jpg')
 
         mask = masks[slide_path]
 
