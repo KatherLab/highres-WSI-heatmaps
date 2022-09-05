@@ -21,8 +21,8 @@ if __name__ == '__main__':
                         help='path to save results to')
     parser.add_argument('-t', '--true-class', type=str, required=True,
                         help='class to be rendered as "hot" in the heatmap')
-    parser.add_argument('--no-pool', action='store_true',
-                        help='do not average pool features after feature extraction phase')
+    parser.add_argument('--blur-kernel-size', metavar='SIZE', type=int, default=15,
+                        help='size of gaussian pooling filter. 0 disables pooling.')
     parser.add_argument('--cache-dir', type=Path, default=None,
                         help='directory to cache extracted features etc. in.')
     threshold_group = parser.add_argument_group(
@@ -220,8 +220,8 @@ if __name__ == '__main__':
                 torch.save(feat_t, fp)
 
         # pool features, but use gaussian blur instead of avg pooling to reduce artifacts
-        if not args.no_pool:
-            feat_t = transforms.functional.gaussian_blur(feat_t, kernel_size=15)
+        if args.blur_kernel_size:
+            feat_t = transforms.functional.gaussian_blur(feat_t, kernel_size=args.blur_kernel_size)
 
         # calculate attention / classification scores according to the MIL model
         with torch.inference_mode():
