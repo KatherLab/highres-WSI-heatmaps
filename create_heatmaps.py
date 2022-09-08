@@ -230,9 +230,6 @@ if __name__ == '__main__':
             att_map = att(feat_t).squeeze()
             score_map = score(feat_t).squeeze()
             score_map = torch.softmax(score_map, 0).cpu()
-            if score_map.shape[0] != 2:
-                raise NotImplementedError(
-                    'only binary models supported so far')
 
         # compute foreground mask
         mask = np.array(PIL.Image.fromarray(slide_array).resize(
@@ -255,7 +252,7 @@ if __name__ == '__main__':
             .permute(1, 0)
         for s in score_maps.keys()],
         dim=1)
-    centered_score = all_scores[true_class_idx] - 0.5
+    centered_score = all_scores[true_class_idx] - (1/len(classes))
     scale_factor = torch.quantile(centered_score.abs(), args.score_threshold) * 2
 
     print('Writing heatmaps...')
@@ -292,7 +289,10 @@ if __name__ == '__main__':
         x.convert('RGB').save(slide_outdir/'attention_overlayed.jpg')
 
         # score map
-        scaled_score_map = (score_maps[slide_path][true_class_idx] - .5) / scale_factor + .5
+        scaled_score_map = (
+            (score_maps[slide_path][true_class_idx] - 1/len(classes))
+            / scale_factor
+            + 1/len(classes))
         scaled_score_map = (scaled_score_map * mask).clamp(0, 1)
 
         # create image with RGB from scores, Alpha from attention
