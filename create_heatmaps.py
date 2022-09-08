@@ -41,7 +41,7 @@ if __name__ == '__main__':
     colormap_group = parser.add_argument_group(
         'colors',
         'color maps to use for attention / score maps (see https://matplotlib.org/stable/tutorials/colors/colormaps.html)')
-    colormap_group.add_argument('--att-cmap', metavar='CMAP', type=str, default='coolwarm',
+    colormap_group.add_argument('--att-cmap', metavar='CMAP', type=str, default='magma',
                                 help='color map to use for the attention heatmap')
     colormap_group.add_argument('--score-cmap', metavar='CMAP', type=str, default='coolwarm',
                                 help='color map to use for the score heatmap')
@@ -207,7 +207,9 @@ if __name__ == '__main__':
                 feat_t = torch.load(io.BytesIO(fp.read()))
             feat_t = feat_t.float()
         else:
-            no_slices = 3
+            max_slice_size = 0xa800000  # experimentally determined
+            # ceil(pixels/max_slice_size)
+            no_slices = (np.prod(slide_array.shape)+max_slice_size-1)/max_slice_size
             step = slide_array.shape[1]//no_slices
             slices = []
             for slice_i in range(no_slices):
