@@ -12,7 +12,8 @@ import warnings
 # loading all the below packages takes quite a bit of time, so get cli parsing
 # out of the way beforehand so it's more responsive in case of errors
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Create heatmaps for MIL models.')
+    parser = argparse.ArgumentParser(
+        description='Create heatmaps for MIL models.')
     parser.add_argument('slide_paths', metavar='SLIDE', type=Path,
                         nargs='+', help='slides to create heatmaps for')
     parser.add_argument('-m', '--model-path', type=Path, required=True,
@@ -28,16 +29,16 @@ if __name__ == '__main__':
     threshold_group = parser.add_argument_group(
         'thresholds', 'thresholds for scaling attention / score values')
     threshold_group.add_argument('--mask-threshold', metavar='THRESH', type=int, default=224,
-                        help='brightness threshold for background removal.')
+                                 help='brightness threshold for background removal.')
     threshold_group.add_argument('--att-upper-threshold', metavar='THRESH', type=float, default=1.,
-                              help='quantile to squash attention from during attention scaling '
-                              ' (e.g. 0.99 will lead to the top 1%% of attention scores to become 1)')
+                                 help='quantile to squash attention from during attention scaling '
+                                 ' (e.g. 0.99 will lead to the top 1%% of attention scores to become 1)')
     threshold_group.add_argument('--att-lower-threshold', metavar='THRESH', type=float, default=.01,
-                              help='quantile to squash attention to during attention scaling '
-                              ' (e.g. 0.01 will lead to the bottom 1%% of attention scores to become 0)')
+                                 help='quantile to squash attention to during attention scaling '
+                                 ' (e.g. 0.01 will lead to the bottom 1%% of attention scores to become 0)')
     threshold_group.add_argument('--score-threshold', metavar='THRESH', type=float, default=.95,
-                              help='quantile to consider in score scaling '
-                              '(e.g. 0.95 will discard the top / bottom 5%% of score values as outliers)')
+                                 help='quantile to consider in score scaling '
+                                 '(e.g. 0.95 will discard the top / bottom 5%% of score values as outliers)')
     colormap_group = parser.add_argument_group(
         'colors',
         'color maps to use for attention / score maps (see https://matplotlib.org/stable/tutorials/colors/colormaps.html)')
@@ -124,6 +125,16 @@ def load_slide(slide: openslide.OpenSlide, target_mpp: float = 256/224) -> np.nd
     return im
 
 
+def batch1d_to_batch_2d(batch1d):
+    batch2d = nn.BatchNorm2d(batch1d.num_features)
+    batch2d.state_dict = batch1d.state_dict
+    return batch2d
+
+
+def dropout1d_to_dropout2d(dropout1d):
+    return nn.Dropout2d(dropout1d.p)
+
+
 def linear_to_conv2d(linear):
     """Converts a fully connected layer to a 1x1 Conv2d layer with the same weights."""
     conv = nn.Conv2d(in_channels=linear.in_features,
@@ -148,8 +159,9 @@ if __name__ == '__main__':
 
     # load base fully convolutional model (w/o pooling / flattening or head)
     # In this case we're loading the xiyue wang RetCLL model, change this bit for other networks
+    import ResNet
     base_model = ResNet.resnet50(num_classes=128, mlp=False,
-                                 two_branch=False, normlinear=True)
+                                    two_branch=False, normlinear=True)
     pretext_model = torch.load('./xiyue-wang.pth')
     base_model.avgpool = nn.Identity()
     base_model.flatten = nn.Identity()
@@ -171,9 +183,12 @@ if __name__ == '__main__':
         nn.Tanh(),
         linear_to_conv2d(learn.attention[2]),
     )
+
     score = nn.Sequential(
         linear_to_conv2d(learn.encoder[0]),
         nn.ReLU(),
+        batch1d_to_batch_2d(learn.head[1]),
+        dropout1d_to_dropout2d(learn.head[2]),
         linear_to_conv2d(learn.head[3]),
     )
 
@@ -198,7 +213,6 @@ if __name__ == '__main__':
             slide_array = load_slide(slide)
             PIL.Image.fromarray(slide_array).save(slide_jpg)
 
-
         # pass the WSI through the fully convolutional network'
         # since our RAM is still too small, we do this in two steps
         # (if you run out of RAM, try upping the number of slices)
@@ -206,16 +220,20 @@ if __name__ == '__main__':
             with ZstdFile(feats_pt, mode='rb') as fp:
                 feat_t = torch.load(io.BytesIO(fp.read()))
             feat_t = feat_t.float()
+        elif (slide_cache_dir/'feats.pt').exists():
+            feat_t = torch.load(slide_cache_dir/'feats.pt').float()
         else:
             max_slice_size = 0xa800000  # experimentally determined
             # ceil(pixels/max_slice_size)
-            no_slices = (np.prod(slide_array.shape)+max_slice_size-1)/max_slice_size
+            no_slices = (np.prod(slide_array.shape)
+                         + max_slice_size-1) // max_slice_size
             step = slide_array.shape[1]//no_slices
             slices = []
             for slice_i in range(no_slices):
                 x = tfms(slide_array[:, slice_i*step:(slice_i+1)*step, :])
                 with torch.inference_mode():
-                    slices.append(base_model(x.unsqueeze(0)))
+                    res = base_model(x.unsqueeze(0))
+                    slices.append(res)
             feat_t = torch.concat(slices, 3).squeeze()
             # save the features (with compression)
             with ZstdFile(feats_pt, mode='wb') as fp:
@@ -223,12 +241,13 @@ if __name__ == '__main__':
 
         # pool features, but use gaussian blur instead of avg pooling to reduce artifacts
         if args.blur_kernel_size:
-            feat_t = transforms.functional.gaussian_blur(feat_t, kernel_size=args.blur_kernel_size)
+            feat_t = transforms.functional.gaussian_blur(
+                feat_t, kernel_size=args.blur_kernel_size)
 
         # calculate attention / classification scores according to the MIL model
         with torch.inference_mode():
             att_map = att(feat_t).squeeze()
-            score_map = score(feat_t).squeeze()
+            score_map = score(feat_t.unsqueeze(0)).squeeze()
             score_map = torch.softmax(score_map, 0).cpu()
 
         # compute foreground mask
@@ -248,12 +267,13 @@ if __name__ == '__main__':
     all_scores = torch.cat([
         # mask out background scores, then linearize them
         score_maps[s].view(2, -1) \
-            .permute(1, 0)[masks[s].reshape(-1)] \
-            .permute(1, 0)
+        .permute(1, 0)[masks[s].reshape(-1)] \
+        .permute(1, 0)
         for s in score_maps.keys()],
         dim=1)
     centered_score = all_scores[true_class_idx] - (1/len(classes))
-    scale_factor = torch.quantile(centered_score.abs(), args.score_threshold) * 2
+    scale_factor = torch.quantile(
+        centered_score.abs(), args.score_threshold) * 2
 
     print('Writing heatmaps...')
     for slide_path in (progress := tqdm(args.slide_paths, leave=False)):
@@ -266,13 +286,14 @@ if __name__ == '__main__':
 
         slide_im = PIL.Image.open(slide_cache_dir/'slide.jpg')
         if not (slide_outdir/'slide.jpg').exists():
-            shutil.copyfile(slide_cache_dir/'slide.jpg', slide_outdir/'slide.jpg')
+            shutil.copyfile(slide_cache_dir/'slide.jpg',
+                            slide_outdir/'slide.jpg')
 
         mask = masks[slide_path]
 
         # attention map
         att_map = (attention_maps[slide_path] - att_lower) \
-                / (att_upper - att_lower)
+            / (att_upper - att_lower)
         att_map = att_map.clamp(0, 1)
 
         # bare attention
