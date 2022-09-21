@@ -6,6 +6,7 @@ import sys
 import shutil
 from typing import Dict, Tuple
 from concurrent import futures
+from urllib.parse import urlparse
 import warnings
 
 
@@ -14,42 +15,44 @@ import warnings
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Create heatmaps for MIL models.')
-    parser.add_argument('slide_paths', metavar='SLIDE', type=Path,
-                        nargs='+', help='slides to create heatmaps for')
+    parser.add_argument('slide_urls', metavar='SLIDE_URL', type=urlparse,
+                        nargs='*', help='Slides to create heatmaps for.')
     parser.add_argument('-m', '--model-path', type=Path, required=True,
-                        help='MIL model used to generate attention / score maps')
+                        help='MIL model used to generate attention / score maps.')
     parser.add_argument('-o', '--output-path', type=Path, required=True,
-                        help='path to save results to')
+                        help='Path to save results to.')
     parser.add_argument('-t', '--true-class', type=str, required=True,
-                        help='class to be rendered as "hot" in the heatmap')
+                        help='Class to be rendered as "hot" in the heatmap.')
+    parser.add_argument('--from-file', metavar='FILE', type=Path,
+                        help='File containing a list of slides to create heatmaps for.')
     parser.add_argument('--blur-kernel-size', metavar='SIZE', type=int, default=15,
-                        help='size of gaussian pooling filter. 0 disables pooling.')
+                        help='Size of gaussian pooling filter. 0 disables pooling.')
     parser.add_argument('--cache-dir', type=Path, default=None,
-                        help='directory to cache extracted features etc. in.')
+                        help='Directory to cache extracted features etc. in.')
     threshold_group = parser.add_argument_group(
         'thresholds', 'thresholds for scaling attention / score values')
     threshold_group.add_argument('--mask-threshold', metavar='THRESH', type=int, default=224,
-                                 help='brightness threshold for background removal.')
+                                 help='Brightness threshold for background removal.')
     threshold_group.add_argument('--att-upper-threshold', metavar='THRESH', type=float, default=1.,
-                                 help='quantile to squash attention from during attention scaling '
+                                 help='Quantile to squash attention from during attention scaling '
                                  ' (e.g. 0.99 will lead to the top 1%% of attention scores to become 1)')
     threshold_group.add_argument('--att-lower-threshold', metavar='THRESH', type=float, default=.01,
-                                 help='quantile to squash attention to during attention scaling '
+                                 help='Quantile to squash attention to during attention scaling '
                                  ' (e.g. 0.01 will lead to the bottom 1%% of attention scores to become 0)')
     threshold_group.add_argument('--score-threshold', metavar='THRESH', type=float, default=.95,
-                                 help='quantile to consider in score scaling '
+                                 help='Quantile to consider in score scaling '
                                  '(e.g. 0.95 will discard the top / bottom 5%% of score values as outliers)')
     colormap_group = parser.add_argument_group(
         'colors',
         'color maps to use for attention / score maps (see https://matplotlib.org/stable/tutorials/colors/colormaps.html)')
     colormap_group.add_argument('--att-cmap', metavar='CMAP', type=str, default='magma',
-                                help='color map to use for the attention heatmap')
+                                help='Color map to use for the attention heatmap.')
     colormap_group.add_argument('--score-cmap', metavar='CMAP', type=str, default='coolwarm',
-                                help='color map to use for the score heatmap')
+                                help='Color map to use for the score heatmap.')
     colormap_group.add_argument('--att-alpha', metavar='ALPHA', type=float, default=.5,
-                                help='opaqueness of attention map')
+                                help='Opaqueness of attention map.')
     colormap_group.add_argument('--score-alpha', metavar='ALPHA', type=float, default=1.,
-                                help='opaqueness of score map at highest-attention location')
+                                help='Opaqueness of score map at highest-attention location.')
     args = parser.parse_args()
     if not args.cache_dir:
         warnings.warn(
@@ -81,8 +84,9 @@ import numpy as np
 from fastai.vision.all import load_learner
 from pyzstd import ZstdFile
 import PIL
+from sftp import get_wsi
 
-# supress DecompressionBombWarning: yes, our files are really that big
+# supress DecompressionBombWarning: yes, our files are really that big (‘-’*)
 PIL.Image.MAX_IMAGE_PIXELS = None
 
 
@@ -200,16 +204,18 @@ if __name__ == '__main__':
     masks: Dict[Path, torch.Tensor] = {}
 
     print('Extracting features, attentions and scores...')
-    for slide_path in (progress := tqdm(args.slide_paths, leave=False)):
-        progress.set_description(slide_path.stem)
-        slide = openslide.OpenSlide(str(slide_path))
-        slide_cache_dir = args.cache_dir/slide_path.stem
+    for slide_url in (progress := tqdm(args.slide_urls, leave=False)):
+        slide_name = Path(slide_url.path).stem
+        progress.set_description(slide_name)
+        slide_cache_dir = args.cache_dir/slide_name
         slide_cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Load WSI as one image
         if (slide_jpg := slide_cache_dir/'slide.jpg').exists():
             slide_array = np.array(PIL.Image.open(slide_jpg))
         else:
+            slide_path = get_wsi(slide_url, cache_dir=args.cache_dir)
+            slide = openslide.OpenSlide(str(slide_path))
             slide_array = load_slide(slide)
             PIL.Image.fromarray(slide_array).save(slide_jpg)
 
