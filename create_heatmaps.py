@@ -16,7 +16,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Create heatmaps for MIL models.')
     parser.add_argument('slide_urls', metavar='SLIDE_URL', type=urlparse,
-                        nargs='*', help='Slides to create heatmaps for.')
+                        nargs='+', help='Slides to create heatmaps for.')
     parser.add_argument('-m', '--model-path', type=Path, required=True,
                         help='MIL model used to generate attention / score maps.')
     parser.add_argument('-o', '--output-path', type=Path, required=True,
@@ -260,9 +260,9 @@ if __name__ == '__main__':
         mask = np.array(PIL.Image.fromarray(slide_array).resize(
             att_map.shape[::-1]).convert('L')) < args.mask_threshold
 
-        attention_maps[slide_path] = att_map
-        score_maps[slide_path] = score_map
-        masks[slide_path] = mask
+        attention_maps[slide_name] = att_map
+        score_maps[slide_name] = score_map
+        masks[slide_name] = mask
 
     # now we can use all of the features to calculate the scaling factors
     all_attentions = torch.cat(
@@ -282,23 +282,24 @@ if __name__ == '__main__':
         centered_score.abs(), args.score_threshold) * 2
 
     print('Writing heatmaps...')
-    for slide_path in (progress := tqdm(args.slide_paths, leave=False)):
-        slide_cache_dir = args.cache_dir/slide_path.stem
-        slide_outdir = args.output_path/slide_path.stem
+    for slide_url in (progress := tqdm(args.slide_urls, leave=False)):
+        slide_name = Path(slide_url.path).stem
+        slide_cache_dir = args.cache_dir/slide_name
+        slide_outdir = args.output_path/slide_name
         slide_outdir.mkdir(parents=True, exist_ok=True)
 
-        progress.set_description(slide_path.stem)
-        slide_outdir = args.output_path/slide_path.stem
+        progress.set_description(slide_name)
+        slide_outdir = args.output_path/slide_name
 
         slide_im = PIL.Image.open(slide_cache_dir/'slide.jpg')
         if not (slide_outdir/'slide.jpg').exists():
             shutil.copyfile(slide_cache_dir/'slide.jpg',
                             slide_outdir/'slide.jpg')
 
-        mask = masks[slide_path]
+        mask = masks[slide_name]
 
         # attention map
-        att_map = (attention_maps[slide_path] - att_lower) \
+        att_map = (attention_maps[slide_name] - att_lower) \
             / (att_upper - att_lower)
         att_map = att_map.clamp(0, 1)
 
@@ -317,7 +318,7 @@ if __name__ == '__main__':
 
         # score map
         scaled_score_map = (
-            (score_maps[slide_path][true_class_idx] - 1/len(classes))
+            (score_maps[slide_name][true_class_idx] - 1/len(classes))
             / scale_factor
             + 1/len(classes))
         scaled_score_map = (scaled_score_map * mask).clamp(0, 1)

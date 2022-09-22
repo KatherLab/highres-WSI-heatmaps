@@ -17,6 +17,7 @@ def get_wsi(url: ParseResult, *, cache_dir: Path) -> Path:
 
         transport = paramiko.Transport((host, port))
         transport.connect(None, username, password)
+        print('Password ok!')
         with paramiko.SFTPClient.from_transport(transport) as sftp:
             remote_stats = sftp.stat(url.path)
 
@@ -40,7 +41,7 @@ def _get_password_for_netloc(netloc: str, netloc_passwds: Mapping[str, str] = {}
     # (netloc_passwds persists between calls)
 
     if netloc not in netloc_passwds:
-        passwd = getpass(f'Enter password for {netloc}')
+        passwd = getpass(f'Enter password for {netloc}: ')
         netloc_passwds[netloc] = passwd
         return passwd
     else:
