@@ -171,7 +171,7 @@ if __name__ == '__main__':
     base_model.flatten = nn.Identity()
     base_model.fc = nn.Identity()
     base_model.load_state_dict(pretext_model, strict=True)
-    base_model.eval()
+    base_model = base_model.eval().cuda()
 
     # transform MIL model into fully convolutional equivalent
     learn = load_learner(args.model_path)
@@ -186,7 +186,7 @@ if __name__ == '__main__':
         linear_to_conv2d(learn.attention[0]),
         nn.Tanh(),
         linear_to_conv2d(learn.attention[2]),
-    )
+    ).eval().cuda()
 
     score = nn.Sequential(
         linear_to_conv2d(learn.encoder[0]),
@@ -194,7 +194,7 @@ if __name__ == '__main__':
         batch1d_to_batch_2d(learn.head[1]),
         dropout1d_to_dropout2d(learn.head[2]),
         linear_to_conv2d(learn.head[3]),
-    )
+    ).eval().cuda()
 
     # we operate in two steps: we first collect all attention values / scores,
     # the entirety of which we then calculate our scaling parameters from.  Only
@@ -238,13 +238,14 @@ if __name__ == '__main__':
             for slice_i in range(no_slices):
                 x = tfms(slide_array[:, slice_i*step:(slice_i+1)*step, :])
                 with torch.inference_mode():
-                    res = base_model(x.unsqueeze(0))
-                    slices.append(res)
+                    res = base_model(x.unsqueeze(0).cuda())
+                    slices.append(res.detach().cpu())
             feat_t = torch.concat(slices, 3).squeeze()
             # save the features (with compression)
             with ZstdFile(feats_pt, mode='wb') as fp:
                 torch.save(feat_t, fp)
 
+        feat_t = feat_t.cuda()
         # pool features, but use gaussian blur instead of avg pooling to reduce artifacts
         if args.blur_kernel_size:
             feat_t = transforms.functional.gaussian_blur(
@@ -252,7 +253,7 @@ if __name__ == '__main__':
 
         # calculate attention / classification scores according to the MIL model
         with torch.inference_mode():
-            att_map = att(feat_t).squeeze()
+            att_map = att(feat_t).squeeze().cpu()
             score_map = score(feat_t.unsqueeze(0)).squeeze()
             score_map = torch.softmax(score_map, 0).cpu()
 

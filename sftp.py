@@ -17,7 +17,7 @@ def get_wsi(url: ParseResult, *, cache_dir: Path) -> Path:
 
         transport = paramiko.Transport((host, port))
         transport.connect(None, username, password)
-        print('Password ok!')
+        print('Authentication successful')
         with paramiko.SFTPClient.from_transport(transport) as sftp:
             remote_stats = sftp.stat(url.path)
 
