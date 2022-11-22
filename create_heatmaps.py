@@ -151,6 +151,7 @@ def linear_to_conv2d(linear):
 
 
 if __name__ == '__main__':
+    regression=True
     # use all the threads
     torch.set_num_threads(os.cpu_count())
     torch.set_num_interop_threads(os.cpu_count())
@@ -175,11 +176,15 @@ if __name__ == '__main__':
 
     # transform MIL model into fully convolutional equivalent
     learn = load_learner(args.model_path)
-    classes = learn.dls.train.dataset._datasets[-1].encode.categories_[0]
-    assert args.true_class in classes, \
-        f'{args.true_class} not a target of {args.model_path}! ' \
-        f'(Did you mean any of {list(classes)}?)'
-    true_class_idx = (classes == args.true_class).argmax()
+
+    breakpoint()
+    if not regression:
+        classes = learn.dls.train.dataset._datasets[-1].encode.categories_[0]
+        assert args.true_class in classes, \
+            f'{args.true_class} not a target of {args.model_path}! ' \
+            f'(Did you mean any of {list(classes)}?)'
+        true_class_idx = (classes == args.true_class).argmax()
+    
     att = nn.Sequential(
         linear_to_conv2d(learn.encoder[0]),
         nn.ReLU(),
@@ -188,13 +193,26 @@ if __name__ == '__main__':
         linear_to_conv2d(learn.attention[2]),
     ).eval().cuda()
 
-    score = nn.Sequential(
-        linear_to_conv2d(learn.encoder[0]),
-        nn.ReLU(),
-        batch1d_to_batch_2d(learn.head[1]),
-        dropout1d_to_dropout2d(learn.head[2]),
-        linear_to_conv2d(learn.head[3]),
-    ).eval().cuda()
+
+    if not regression:
+        score = nn.Sequential(
+            linear_to_conv2d(learn.encoder[0]),
+            nn.ReLU(),
+            batch1d_to_batch_2d(learn.head[1]),
+            dropout1d_to_dropout2d(learn.head[2]),
+            linear_to_conv2d(learn.head[3]),
+        ).eval().cuda()
+    
+    else:
+        #architect used in the regression attMIL model
+        score = nn.Sequential(
+            linear_to_conv2d(learn.encoder[0]),
+            nn.ReLU(),
+            #batch1d_to_batch_2d(learn.head[1]),
+            #dropout1d_to_dropout2d(learn.head[2]),
+            nn.Flatten(), # is Flattening required here?
+            linear_to_conv2d(learn.head[1]),
+        ).eval().cuda()
 
     # we operate in two steps: we first collect all attention values / scores,
     # the entirety of which we then calculate our scaling parameters from.  Only
@@ -233,6 +251,7 @@ if __name__ == '__main__':
             # ceil(pixels/max_slice_size)
             no_slices = (np.prod(slide_array.shape)
                          + max_slice_size-1) // max_slice_size
+            no_slices = 100e3
             step = slide_array.shape[1]//no_slices
             slices = []
             for slice_i in range(no_slices):
@@ -240,6 +259,7 @@ if __name__ == '__main__':
                 with torch.inference_mode():
                     res = base_model(x.unsqueeze(0).cuda())
                     slices.append(res.detach().cpu())
+                    del slice_i, res, x
             feat_t = torch.concat(slices, 3).squeeze()
             # save the features (with compression)
             with ZstdFile(feats_pt, mode='wb') as fp:
@@ -278,6 +298,8 @@ if __name__ == '__main__':
         .permute(1, 0)
         for s in score_maps.keys()],
         dim=1)
+
+    breakpoint()
     centered_score = all_scores[true_class_idx] - (1/len(classes))
     scale_factor = torch.quantile(
         centered_score.abs(), args.score_threshold) * 2
