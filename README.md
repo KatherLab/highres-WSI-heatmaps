@@ -24,6 +24,7 @@ Create heatmaps for classification or regression attMIL models.
 | `--cache-dir CACHE_DIR` | Directory to cache extracted features etc. in. |
 
 | Model type (mutually exclusive) | Description |
+|---------|-------------|
 | `-t TRUE_CLASS`, `--true-class TRUE_CLASS` | Class to be rendered as "hot" in the heatmap. |
 | `--use-regression` | Using regression for heatmaps, doesn't work for score maps yet. |
 
