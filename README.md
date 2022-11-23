@@ -1,5 +1,5 @@
 ```sh
-create_heatmaps.py [-h] -m MODEL_PATH -o OUTPUT_PATH [-t TRUE_CLASS or --is-regression]
+create_heatmaps.py [-h] -m MODEL_PATH -o OUTPUT_PATH (-t TRUE_CLASS | --is-regression)
                    [--no-pool]
                    [--mask-threshold THRESH]
                    [--att-upper-threshold THRESH]
