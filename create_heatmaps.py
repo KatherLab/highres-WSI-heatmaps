@@ -155,6 +155,8 @@ if __name__ == '__main__':
     torch.set_num_threads(os.cpu_count())
     torch.set_num_interop_threads(os.cpu_count())
 
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     # default imgnet transforms
     tfms = transforms.Compose([
         transforms.ToTensor(),
@@ -166,12 +168,12 @@ if __name__ == '__main__':
     import ResNet
     base_model = ResNet.resnet50(num_classes=128, mlp=False,
                                     two_branch=False, normlinear=True)
-    pretext_model = torch.load('./xiyue-wang.pth')
+    pretext_model = torch.load('./xiyue-wang.pth', map_location=device)
     base_model.avgpool = nn.Identity()
     base_model.flatten = nn.Identity()
     base_model.fc = nn.Identity()
     base_model.load_state_dict(pretext_model, strict=True)
-    base_model = base_model.eval().cuda()
+    base_model = base_model.eval().to(device)
 
     # transform MIL model into fully convolutional equivalent
     learn = load_learner(args.model_path)
