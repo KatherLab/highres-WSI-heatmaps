@@ -42,49 +42,20 @@ Create heatmaps for MIL models.
 
 ## Running in a Container
 
-To build the development and deployment containers, navigate to the repository's
-directory and run:
+The heatmap script can be conveniently run in a podman container.  To do so, use
+the `heatmaps-container.sh` convenience script.
 
 ```sh
-podman build --target devel --tag heatmaps:devel .
-podman build --tag heatmaps:latest .
-```
-
-or, when using Docker (untested):
-
-```sh
-docker build --target devel --tag heatmaps:devel .
-docker build --tag heatmaps:latest .
-```
-
-After that, the heatmap script can be run as follows:
-
-```sh
-podman run --rm -ti \
-    --security-opt=label=disable --hooks-dir=/usr/share/containers/oci/hooks.d/ \
+./heatmaps-container.sh \
     -v /path/containing/export.pkl:/model \
     -v /path/containing/WSIs:/wsis \
     -v $HOME/heatmaps-cache:/cache \
-    localhost/heatmaps:latest \
+    -- \
     -t TARGET_LABEL \
     /wsis/slide1.svs \
     /wsis/slide2.svs
 ```
 
-Or, alternatively, with Docker:
+In order to use GPU acceleration, the `nvidia-container-toolkit` has to be
+installed beforehand.
 
-```sh
-podman run --rm -ti \
-    --gpus all \
-    -v /path/containing/export.pkl:/model \
-    -v /path/containing/WSIs:/wsis \
-    -v $HOME/heatmaps-cache:/cache \
-    localhost/heatmaps:latest \
-    -t TARGET_LABEL \
-    /wsis/slide1.svs \
-    /wsis/slide2.svs
-```
-
-In order to use GPU acceleration, the nvidia-container-toolkit has to be
-installed beforehand.  If it is not installed or the computations are to be made
-on the CPU, the `--gpus all` has to be omitted.
