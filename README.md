@@ -1,3 +1,7 @@
+# High-Resolution Heatmaps for Marugoto MIL Models
+
+## Options
+
 ```sh
 create_heatmaps.py [-h] -m MODEL_PATH -o OUTPUT_PATH -t TRUE_CLASS
                    [--no-pool]
@@ -35,3 +39,52 @@ Create heatmaps for MIL models.
 |--------|-------------|
 | `--att-cmap CMAP` | Color map to use for the attention heatmap. |
 | `--score-cmap CMAP` | Color map to use for the score heatmap. |
+
+## Running in a Container
+
+To build the development and deployment containers, navigate to the repository's
+directory and run:
+
+```sh
+podman build --target devel --tag heatmaps:devel .
+podman build --tag heatmaps:latest .
+```
+
+or, when using Docker (untested):
+
+```sh
+docker build --target devel --tag heatmaps:devel .
+docker build --tag heatmaps:latest .
+```
+
+After that, the heatmap script can be run as follows:
+
+```sh
+podman run --rm -ti \
+    --security-opt=label=disable --hooks-dir=/usr/share/containers/oci/hooks.d/ \
+    -v /path/containing/export.pkl:/model \
+    -v /path/containing/WSIs:/wsis \
+    -v $HOME/heatmaps-cache:/cache \
+    localhost/heatmaps:latest \
+    -t TARGET_LABEL \
+    /wsis/slide1.svs \
+    /wsis/slide2.svs
+```
+
+Or, alternatively, with Docker:
+
+```sh
+podman run --rm -ti \
+    --gpus all \
+    -v /path/containing/export.pkl:/model \
+    -v /path/containing/WSIs:/wsis \
+    -v $HOME/heatmaps-cache:/cache \
+    localhost/heatmaps:latest \
+    -t TARGET_LABEL \
+    /wsis/slide1.svs \
+    /wsis/slide2.svs
+```
+
+In order to use GPU acceleration, the nvidia-container-toolkit has to be
+installed beforehand.  If it is not installed or the computations are to be made
+on the CPU, the `--gpus all` has to be omitted.
