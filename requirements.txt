@@ -5,6 +5,6 @@ openslide-python~=1.2
 paramiko~=2.12
 Pillow~=9.1
 pyzstd~=0.15
-torch~=1.13
+torch~=1.12
 torchvision~=0.14
 tqdm~=4.63

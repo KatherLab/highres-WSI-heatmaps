@@ -1,8 +1,10 @@
-FROM pytorch/pytorch AS develop
-WORKDIR /resources
-RUN apt-get update \
-	&& apt-get install -y gcc git python3-dev libopenslide0 wget \
-	&& wget https://localtoast-dump.s3.eu-central-1.amazonaws.com/xiyue-wang.pth
+FROM nvcr.io/nvidia/pytorch:22.11-py3 AS develop
+RUN set -exu; \
+	apt-get update; \
+	DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libopenslide0; \
+	rm -rf /var/lib/apt/lists/; \
+	mkdir -p /resources; \
+	curl -o /resources/xiyue-wang.pth https://localtoast-dump.s3.eu-central-1.amazonaws.com/xiyue-wang.pth
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 WORKDIR /workspace
