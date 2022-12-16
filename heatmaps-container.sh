@@ -9,8 +9,9 @@
 #
 # i.e. a -- is used to separate the podman options from heatmaps options
 
-set -e
+set -eux
 
+# consume all args until the first `--` into `podman_args`
 podman_args=()
 while [[ $# -gt  0 ]]; do
     case $1 in
@@ -19,7 +20,7 @@ while [[ $# -gt  0 ]]; do
     esac
 done
 
-image_id=$(podman build -q .)
+image_id=$(podman build -q "$(dirname -- "$0")")
 
 podman run --rm -ti \
     --security-opt=label=disable --hooks-dir=/usr/share/containers/oci/hooks.d/ \
