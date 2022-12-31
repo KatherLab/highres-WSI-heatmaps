@@ -273,14 +273,11 @@ if __name__ == '__main__':
     att_lower = all_attentions.quantile(args.att_lower_threshold)
     att_upper = all_attentions.quantile(args.att_upper_threshold)
 
-    all_scores = torch.cat([
+    all_true_scores = torch.cat([
         # mask out background scores, then linearize them
-        score_maps[s].view(2, -1) \
-        .permute(1, 0)[masks[s].reshape(-1)] \
-        .permute(1, 0)
-        for s in score_maps.keys()],
-        dim=1)
-    centered_score = all_scores[true_class_idx] - (1/len(classes))
+        score_maps[s][true_class_idx].view(-1)[masks[s].reshape(-1)]
+        for s in score_maps.keys()])
+    centered_score = all_true_scores - (1/len(classes))
     scale_factor = torch.quantile(
         centered_score.abs(), args.score_threshold) * 2
 
