@@ -47,11 +47,7 @@ the `heatmaps-container.sh` convenience script.
 
 ```sh
 ./heatmaps-container.sh \
-    -v /path/containing/export.pkl:/model \
-    -v /path/containing/WSIs:/wsis \
-    -v $HOME/heatmaps-cache:/cache \
-    -- \
-    -t TARGET_LABEL \
+    -t TRUE_CLASS \
     /wsis/slide1.svs \
     /wsis/slide2.svs
 ```
