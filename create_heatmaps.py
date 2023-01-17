@@ -57,6 +57,12 @@ if __name__ == "__main__":
         default=None,
         help="Directory to cache extracted features etc. in.",
     )
+    parser.add_argument(
+        "--force-cpu",
+        type=bool,
+        default=False,
+        help="Forcing the use of cpu regardless of cuda availability.",
+    )
     threshold_group = parser.add_argument_group(
         "thresholds", "thresholds for scaling attention / score values"
     )
@@ -241,7 +247,10 @@ if __name__ == "__main__":
     torch.set_num_threads(os.cpu_count())
     torch.set_num_interop_threads(os.cpu_count())
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.force_cpu:
+        device = torch.device("cpu")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # default imgnet transforms
     tfms = transforms.Compose(
@@ -282,7 +291,7 @@ if __name__ == "__main__":
             linear_to_conv2d(learn.attention[2]),
         )
         .eval()
-        .cuda()
+        .to(device)
     )
 
     score = (
@@ -294,7 +303,7 @@ if __name__ == "__main__":
             linear_to_conv2d(learn.head[3]),
         )
         .eval()
-        .cuda()
+        .to(device)
     )
 
     # we operate in two steps: we first collect all attention values / scores,
@@ -340,14 +349,14 @@ if __name__ == "__main__":
             for slice_i in range(no_slices):
                 x = tfms(slide_array[:, slice_i * step : (slice_i + 1) * step, :])
                 with torch.inference_mode():
-                    res = base_model(x.unsqueeze(0).cuda())
+                    res = base_model(x.unsqueeze(0).to(device))
                     slices.append(res.detach().cpu())
             feat_t = torch.concat(slices, 3).squeeze()
             # save the features (with compression)
             with ZstdFile(feats_pt, mode="wb") as fp:
                 torch.save(feat_t, fp)
 
-        feat_t = feat_t.cuda()
+        feat_t = feat_t.to(device)
         # pool features, but use gaussian blur instead of avg pooling to reduce artifacts
         if args.blur_kernel_size:
             feat_t = transforms.functional.gaussian_blur(
