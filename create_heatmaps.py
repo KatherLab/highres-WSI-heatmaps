@@ -192,13 +192,13 @@ def load_slide(slide: openslide.OpenSlide, target_mpp: float = 256 / 224) -> np.
     slide_mpp = float(slide.properties[openslide.PROPERTY_NAME_MPP_X])
     tile_target_size = np.round(stride * slide_mpp / target_mpp).astype(int)
 
-    with futures.ThreadPoolExecutor(min(32, os.cpu_count())) as executor:
+    with futures.ThreadPoolExecutor(min(32, os.cpu_count() or 1)) as executor:
         # map from future to its (row, col) index
         future_coords: Dict[futures.Future, Tuple[int, int]] = {}
         for i in range(steps):  # row
             for j in range(steps):  # column
                 future = executor.submit(
-                    _load_tile, slide, (stride * (j, i)), stride, tile_target_size
+                    _load_tile, slide, (stride * (j, i)), stride, tile_target_size  # type: ignore
                 )
                 future_coords[future] = (i, j)
 
@@ -244,8 +244,8 @@ def linear_to_conv2d(linear):
 
 if __name__ == "__main__":
     # use all the threads
-    torch.set_num_threads(os.cpu_count())
-    torch.set_num_interop_threads(os.cpu_count())
+    torch.set_num_threads(os.cpu_count() or 1)
+    torch.set_num_interop_threads(os.cpu_count() or 1)
 
     if args.force_cpu:
         device = torch.device("cpu")
@@ -309,9 +309,9 @@ if __name__ == "__main__":
     # we operate in two steps: we first collect all attention values / scores,
     # the entirety of which we then calculate our scaling parameters from.  Only
     # then we output the actual maps.
-    attention_maps: Dict[Path, torch.Tensor] = {}
-    score_maps: Dict[Path, torch.Tensor] = {}
-    masks: Dict[Path, torch.Tensor] = {}
+    attention_maps: Dict[str, torch.Tensor] = {}
+    score_maps: Dict[str, torch.Tensor] = {}
+    masks: Dict[str, torch.Tensor] = {}
 
     print("Extracting features, attentions and scores...")
     for slide_url in (progress := tqdm(args.slide_urls, leave=False)):
@@ -354,7 +354,7 @@ if __name__ == "__main__":
             feat_t = torch.concat(slices, 3).squeeze()
             # save the features (with compression)
             with ZstdFile(feats_pt, mode="wb") as fp:
-                torch.save(feat_t, fp)
+                torch.save(feat_t, fp)  # type: ignore
 
         feat_t = feat_t.to(device)
         # pool features, but use gaussian blur instead of avg pooling to reduce artifacts

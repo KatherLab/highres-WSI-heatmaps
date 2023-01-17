@@ -3,7 +3,7 @@ from getpass import getpass
 import os
 from pathlib import Path
 import re
-from typing import Mapping
+from typing import MutableMapping, Tuple
 from urllib.parse import ParseResult
 import paramiko
 
@@ -18,7 +18,8 @@ def get_wsi(url: ParseResult, *, cache_dir: Path) -> Path:
         transport = paramiko.Transport((host, port))
         transport.connect(None, username, password)
         print("Authentication successful")
-        with paramiko.SFTPClient.from_transport(transport) as sftp:
+        with paramiko.SFTPClient.from_transport(transport) as sftp:  # type: ignore
+            assert sftp is not None
             remote_stats = sftp.stat(url.path)
 
             cached_wsi_path = cache_dir / Path(url.path).name
@@ -26,18 +27,22 @@ def get_wsi(url: ParseResult, *, cache_dir: Path) -> Path:
             if (
                 cached_wsi_path.exists()
                 and (cached_stats := os.stat(cached_wsi_path))
+                and remote_stats.st_size
                 and cached_stats.st_size == remote_stats.st_size  # same file size
+                and remote_stats.st_mtime
                 and remote_stats.st_mtime <= cached_stats.st_mtime
             ):  # remote file not newer
                 return cached_wsi_path  # yes, we have a good copy
 
-            sftp.get(remotepath=url.path, localpath=cached_wsi_path)
+            sftp.get(remotepath=str(url.path), localpath=str(cached_wsi_path))
             # if all else fails, download it
             return cached_wsi_path
+    else:
+        raise RuntimeError(f"unsupported scheme: {url.scheme}")
 
 
 def _get_password_for_netloc(
-    netloc: str, netloc_passwds: Mapping[str, str] = {}
+    netloc: str, netloc_passwds: MutableMapping[str, str] = {}
 ) -> str:
     # absolutely disgusting use of a "static variable" in the form of a default argument
     # don't try this at home
@@ -51,7 +56,7 @@ def _get_password_for_netloc(
         return netloc_passwds[netloc]
 
 
-def _parse_netloc(netloc: str) -> str:
+def _parse_netloc(netloc: str) -> Tuple[str, str, int]:
     # parses a username / host / port in the format user@host[:port]
     if not (match := re.match(r"(.*)@([^:]*)(?::)?(.*)?", netloc)):
         raise RuntimeError(
