@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import io
 from pathlib import Path
 import sys
-import shutil
 from typing import Dict, Tuple
 from concurrent import futures
 from urllib.parse import urlparse
@@ -165,6 +165,7 @@ from fastai.vision.all import load_learner
 from pyzstd import ZstdFile
 import PIL
 from sftp import get_wsi
+import deepzoom
 
 # supress DecompressionBombWarning: yes, our files are really that big (‘-’*)
 PIL.Image.MAX_IMAGE_PIXELS = None
@@ -240,6 +241,24 @@ def linear_to_conv2d(linear):
         }
     )
     return conv
+
+
+def write_as_svg(im: PIL.Image, size: Tuple[int, int], outfile: io.TextIOWrapper):
+    """Writes image to svg with custom size"""
+    outfile.write(
+        '<svg version="1.1" baseProfile="tiny" id="svg-root" '
+        f'width="{size[0]}" height="{size[1]}" '
+        'xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">'
+    )
+
+    buffered = io.BytesIO()
+    im.save(buffered, format="PNG")
+    image_data = base64.b64encode(buffered.getvalue())
+    outfile.write(
+        f'<image width="100%" height="100%" xlink:href="data:image/png;base64,{image_data.decode()}" />'
+    )
+
+    outfile.write("</svg>")
 
 
 if __name__ == "__main__":
@@ -347,9 +366,11 @@ if __name__ == "__main__":
             step = slide_array.shape[1] // no_slices
             slices = []
             for slice_i in range(no_slices):
-                x = tfms(slide_array[:, slice_i * step : (slice_i + 1) * step, :])
+                slide_im_rgba = tfms(
+                    slide_array[:, slice_i * step : (slice_i + 1) * step, :]
+                )
                 with torch.inference_mode():
-                    res = base_model(x.unsqueeze(0).to(device))
+                    res = base_model(slide_im_rgba.unsqueeze(0).to(device))
                     slices.append(res.detach().cpu())
             feat_t = torch.concat(slices, 3).squeeze()
             # save the features (with compression)
@@ -411,26 +432,16 @@ if __name__ == "__main__":
         slide_outdir = args.output_path / slide_name
 
         slide_im = PIL.Image.open(slide_cache_dir / "slide.jpg")
-        if not (slide_outdir / "slide.jpg").exists():
-            shutil.copyfile(slide_cache_dir / "slide.jpg", slide_outdir / "slide.jpg")
+
+        # write image pyramid
+        creator = deepzoom.ImageCreator()
+        creator.create(slide_im, slide_outdir / "slide_pyramid.dzi")
 
         mask = masks[slide_name]
 
         # attention map
         att_map = (attention_maps[slide_name] - att_lower) / (att_upper - att_lower)
         att_map = att_map.clamp(0, 1)
-
-        # bare attention
-        im = plt.get_cmap(args.att_cmap)(att_map)
-        im[:, :, 3] = mask
-        PIL.Image.fromarray(np.uint8(im * 255.0)).save(slide_outdir / "attention.png")
-        # attention map (blended with slide)
-        im[:, :, 3] *= args.att_alpha
-        map_im = PIL.Image.fromarray(np.uint8(im * 255.0))
-        map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
-        x = slide_im.copy().convert("RGBA")
-        x.paste(map_im, mask=map_im)
-        x.convert("RGB").save(slide_outdir / "attention_overlayed.jpg")
 
         # score map
         scaled_score_map = (
@@ -442,9 +453,5 @@ if __name__ == "__main__":
         im = plt.get_cmap(args.score_cmap)(scaled_score_map)
         im[:, :, 3] = att_map * mask * args.score_alpha
         map_im = PIL.Image.fromarray(np.uint8(im * 255.0))
-        map_im.save(slide_outdir / "map.png")
-        # overlayed onto slide
-        map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
-        x = slide_im.copy().convert("RGBA")
-        x.paste(map_im, mask=map_im)
-        x.convert("RGB").save(slide_outdir / "map_overlayed.jpg")
+        with open(slide_outdir / "map.svg", "w") as outfile:
+            write_as_svg(map_im, slide_im.size, outfile)
