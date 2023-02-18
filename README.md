@@ -1,3 +1,7 @@
+# High-Resolution Heatmaps for Marugoto MIL Models
+
+## Options
+
 ```sh
 create_heatmaps.py [-h] -m MODEL_PATH -o OUTPUT_PATH (-t TRUE_CLASS | --is-regression)
                    [--no-pool]
@@ -39,3 +43,19 @@ Create heatmaps for classification or regression attMIL models.
 |--------|-------------|
 | `--att-cmap CMAP` | Color map to use for the attention heatmap. |
 | `--score-cmap CMAP` | Color map to use for the score heatmap. |
+
+## Running in a Container
+
+The heatmap script can be conveniently run in a podman container.  To do so, use
+the `heatmaps-container.sh` convenience script.
+
+```sh
+./heatmaps-container.sh \
+    -t TRUE_CLASS \
+    /wsis/slide1.svs \
+    /wsis/slide2.svs
+```
+
+In order to use GPU acceleration, the `nvidia-container-toolkit` has to be
+installed beforehand.
+
