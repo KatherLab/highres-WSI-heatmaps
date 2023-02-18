@@ -12,6 +12,29 @@ import warnings
 
 # loading all the below packages takes quite a bit of time, so get cli parsing
 # out of the way beforehand so it's more responsive in case of errors
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description='Create heatmaps for MIL models.')
+    parser.add_argument('slide_urls', metavar='SLIDE_URL', type=urlparse,
+                        nargs='+', help='Slides to create heatmaps for.')
+    parser.add_argument('-m', '--model-path', type=Path, required=True,
+                        help='MIL model used to generate attention / score maps.')
+    parser.add_argument('-o', '--output-path', type=Path, required=True,
+                        help='Path to save results to.')
+    parser.add_argument('--from-file', metavar='FILE', type=Path,
+                        help='File containing a list of slides to create heatmaps for.')
+    parser.add_argument('--blur-kernel-size', metavar='SIZE', type=int, default=15,
+                        help='Size of gaussian pooling filter. 0 disables pooling.')
+    parser.add_argument('--cache-dir', type=Path, default=None,
+                        help='Directory to cache extracted features etc. in.')
+    
+    modeltype_group = parser.add_mutually_exclusive_group(required=True)
+    modeltype_group.add_argument('-t', '--true-class', type=str,
+                        help='Class to be rendered as "hot" in the heatmap.')
+    modeltype_group.add_argument('--is-regression', action='store_true', default=False, 
+                        help='Creates heatmap for attMIL regression model when set to True, default False.')
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create heatmaps for MIL models.")
     parser.add_argument(
@@ -63,6 +86,7 @@ if __name__ == "__main__":
         default=False,
         help="Forcing the use of cpu regardless of cuda availability.",
     )
+
     threshold_group = parser.add_argument_group(
         "thresholds", "thresholds for scaling attention / score values"
     )
@@ -276,6 +300,35 @@ if __name__ == "__main__":
 
     # transform MIL model into fully convolutional equivalent
     learn = load_learner(args.model_path)
+
+
+    if not args.is_regression:
+        classes = learn.dls.train.dataset._datasets[-1].encode.categories_[0]
+        assert args.true_class in classes, \
+            f'{args.true_class} not a target of {args.model_path}! ' \
+            f'(Did you mean any of {list(classes)}?)'
+        true_class_idx = (classes == args.true_class).argmax()
+    
+    #else:
+        #can be skipped? No score maps then
+        # classes=np.unique(learn.dls.train.dataset._datasets[-1][1])
+        # class_data = learn.dls.train.dataset._datasets[-1][1]
+        # #data = np.unique(learn.dls.train.dataset._datasets[-1][0])
+        # true_range = range((len(classes)//2), len(classes))
+        # true_class_idx = (classes in true_range).argmax() #-1 highest, or 0 for lowest. or maybe [len(classes)//2:] to split at median
+    
+    att = nn.Sequential(
+        linear_to_conv2d(learn.encoder[0]),
+        nn.ReLU(),
+        linear_to_conv2d(learn.attention[0]),
+        nn.Tanh(),
+        linear_to_conv2d(learn.attention[2]),
+    ).eval().cuda()
+
+
+    if not args.is_regression:
+        score = nn.Sequential(
+
     classes = learn.dls.train.dataset._datasets[-1].encode.categories_[0]
     assert args.true_class in classes, (
         f"{args.true_class} not a target of {args.model_path}! "
@@ -301,6 +354,17 @@ if __name__ == "__main__":
             batch1d_to_batch_2d(learn.head[1]),
             dropout1d_to_dropout2d(learn.head[2]),
             linear_to_conv2d(learn.head[3]),
+
+        ).eval().cuda()
+    
+    else:
+        #architect used in the regression attMIL model
+        score = nn.Sequential(
+            linear_to_conv2d(learn.encoder[0]),
+            nn.ReLU(),
+            linear_to_conv2d(learn.head[1]),
+        ).eval().cuda()
+
         )
         .eval()
         .to(device)
@@ -351,6 +415,7 @@ if __name__ == "__main__":
                 with torch.inference_mode():
                     res = base_model(x.unsqueeze(0).to(device))
                     slices.append(res.detach().cpu())
+                    del slice_i, res, x
             feat_t = torch.concat(slices, 3).squeeze()
             # save the features (with compression)
             with ZstdFile(feats_pt, mode="wb") as fp:
@@ -364,10 +429,16 @@ if __name__ == "__main__":
             )
 
         # calculate attention / classification scores according to the MIL model
-        with torch.inference_mode():
-            att_map = att(feat_t).squeeze().cpu()
-            score_map = score(feat_t.unsqueeze(0)).squeeze()
-            score_map = torch.softmax(score_map, 0).cpu()
+        if not args.is_regression:
+            with torch.inference_mode():
+                att_map = att(feat_t).squeeze().cpu()
+                score_map = score(feat_t.unsqueeze(0)).squeeze()
+                score_map = torch.softmax(score_map, 0).cpu()
+        else:
+            with torch.inference_mode():
+                att_map = att(feat_t).squeeze().cpu()
+                score_map = score(feat_t.unsqueeze(0)).squeeze()
+                score_map = torch.sigmoid(score_map).cpu() #for regression
 
         # compute foreground mask
         mask = (
@@ -390,6 +461,35 @@ if __name__ == "__main__":
     att_lower = all_attentions.quantile(args.att_lower_threshold)
     att_upper = all_attentions.quantile(args.att_upper_threshold)
 
+
+    if not args.is_regression:
+        all_scores = torch.cat([
+            # mask out background scores, then linearize them
+            score_maps[s].view(2, -1) \
+            .permute(1, 0)[masks[s].reshape(-1)] \
+            .permute(1, 0)
+            for s in score_maps.keys()],
+            dim=1)
+    else:
+        #FIXME
+        all_scores = torch.cat([score_maps[s].view(2, -1) \
+            .permute(1, 0)[masks[s].reshape(2,-1).T] #\
+            #.permute(1, 0)
+            for s in score_maps.keys()])
+
+    if not args.is_regression:
+        centered_score = all_scores[true_class_idx] - (1/len(classes))
+        scale_factor = torch.quantile(
+        centered_score.abs(), args.score_threshold) * 2
+    else:
+        #FIXME
+        centered_score = all_scores #[0] - (1/2) #1/len(classes) or just 1 / 2 because I split median?
+        scale_factor = torch.quantile(
+        centered_score.abs(), args.score_threshold) * 2
+
+
+    print('Writing heatmaps...')
+
     all_true_scores = torch.cat(
         [
             # mask out background scores, then linearize them
@@ -401,6 +501,7 @@ if __name__ == "__main__":
     scale_factor = torch.quantile(centered_score.abs(), args.score_threshold) * 2
 
     print("Writing heatmaps...")
+
     for slide_url in (progress := tqdm(args.slide_urls, leave=False)):
         slide_name = Path(slide_url.path).stem
         slide_cache_dir = args.cache_dir / slide_name
@@ -433,6 +534,34 @@ if __name__ == "__main__":
         x.convert("RGB").save(slide_outdir / "attention_overlayed.jpg")
 
         # score map
+
+        if not args.is_regression:
+            scaled_score_map = (
+                (score_maps[slide_name][true_class_idx] - 1/len(classes))
+                / scale_factor
+                + 1/len(classes))
+            scaled_score_map = (scaled_score_map * mask).clamp(0, 1)
+        
+        else:
+            #FIXME
+            scaled_score_map = (
+                score_maps[slide_name]
+                / scale_factor)
+            scaled_score_map = (scaled_score_map * mask).clamp(0, 1)
+
+        #FIXME: score maps need to be thought through a bit more for regression
+        if not args.is_regression:
+            # create image with RGB from scores, Alpha from attention
+            im = plt.get_cmap(args.score_cmap)(scaled_score_map)
+            im[:, :, 3] = att_map * mask * args.score_alpha
+            map_im = PIL.Image.fromarray(np.uint8(im*255.))
+            map_im.save(slide_outdir/'map.png')
+            # overlayed onto slide
+            map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
+            x = slide_im.copy().convert('RGBA')
+            x.paste(map_im, mask=map_im)
+            x.convert('RGB').save(slide_outdir/'map_overlayed.jpg')
+
         scaled_score_map = (
             score_maps[slide_name][true_class_idx] - 1 / len(classes)
         ) / scale_factor + 1 / len(classes)

@@ -3,7 +3,7 @@
 ## Options
 
 ```sh
-create_heatmaps.py [-h] -m MODEL_PATH -o OUTPUT_PATH -t TRUE_CLASS
+create_heatmaps.py [-h] -m MODEL_PATH -o OUTPUT_PATH (-t TRUE_CLASS | --is-regression)
                    [--no-pool]
                    [--mask-threshold THRESH]
                    [--att-upper-threshold THRESH]
@@ -14,7 +14,7 @@ create_heatmaps.py [-h] -m MODEL_PATH -o OUTPUT_PATH -t TRUE_CLASS
                    SLIDE [SLIDE ...]
 ```
 
-Create heatmaps for MIL models.
+Create heatmaps for classification or regression attMIL models.
 
 | Positional Arguments | Description |
 |----------------------|-------------|
@@ -24,9 +24,13 @@ Create heatmaps for MIL models.
 |---------|-------------|
 | `-m MODEL_PATH`, `--model-path MODEL_PATH` | MIL model used to generate attention / score maps. |
 | `-o OUTPUT_PATH`, `--output-path OUTPUT_PATH` | Path to save results to. |
-| `-t TRUE_CLASS`, `--true-class TRUE_CLASS` | Class to be rendered as "hot" in the heatmap. |
 | `--no-pool` | Do not average pool features after feature extraction phase. |
 | `--cache-dir CACHE_DIR` | Directory to cache extracted features etc. in. |
+
+| Model type (mutually exclusive) | Description |
+|---------|-------------|
+| `-t TRUE_CLASS`, `--true-class TRUE_CLASS` | Using a classification model for heatmaps, class to be rendered as "hot" in the heatmap for classification. |
+| `--use-regression` | Using a regression model for heatmaps, doesn't work for score maps yet. |
 
 | Thresholds | Description |
 |------------|-------------|
