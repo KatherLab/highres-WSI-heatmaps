@@ -8,6 +8,7 @@ from typing import Dict, Tuple
 from concurrent import futures
 from urllib.parse import urlparse
 import warnings
+import json
 
 
 # loading all the below packages takes quite a bit of time, so get cli parsing
@@ -386,9 +387,15 @@ if __name__ == "__main__":
 
         # calculate attention / classification scores according to the MIL model
         with torch.inference_mode():
+            scores = torch.softmax(learn.model(feat_t), -1).squeeze().cpu()
             att_map = att(feat_t).squeeze().cpu()
             score_map = score(feat_t.unsqueeze(0)).squeeze()
             score_map = torch.softmax(score_map, 0).cpu()
+
+        slide_outdir = args.output_path / slide_name
+        slide_outdir.mkdir(parents=True, exist_ok=True)
+        with open(slide_outdir/"prediction.json", "w") as outfile:
+            json.dump({"score": float(scores[true_class_idx])}, outfile)
 
         # compute foreground mask
         mask = (
