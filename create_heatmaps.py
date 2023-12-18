@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import io
 from pathlib import Path
 import sys
-import shutil
 from typing import Dict, Tuple
 from concurrent import futures
 from urllib.parse import urlparse
 import warnings
+import json
 
 
 # loading all the below packages takes quite a bit of time, so get cli parsing
@@ -56,6 +57,12 @@ if __name__ == "__main__":
         type=Path,
         default=None,
         help="Directory to cache extracted features etc. in.",
+    )
+    parser.add_argument(
+        "--force-cpu",
+        type=bool,
+        default=False,
+        help="Forcing the use of cpu regardless of cuda availability.",
     )
     threshold_group = parser.add_argument_group(
         "thresholds", "thresholds for scaling attention / score values"
@@ -159,6 +166,7 @@ from fastai.vision.all import load_learner
 from pyzstd import ZstdFile
 import PIL
 from sftp import get_wsi
+import deepzoom
 
 # supress DecompressionBombWarning: yes, our files are really that big (‘-’*)
 PIL.Image.MAX_IMAGE_PIXELS = None
@@ -236,12 +244,33 @@ def linear_to_conv2d(linear):
     return conv
 
 
+def write_as_svg(im: PIL.Image, size: Tuple[int, int], outfile: io.TextIOWrapper):
+    """Writes image to svg with custom size"""
+    outfile.write(
+        '<svg version="1.1" baseProfile="tiny" id="svg-root" '
+        f'width="{size[0]}" height="{size[1]}" '
+        'xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">'
+    )
+
+    buffered = io.BytesIO()
+    im.save(buffered, format="PNG")
+    image_data = base64.b64encode(buffered.getvalue())
+    outfile.write(
+        f'<image width="100%" height="100%" xlink:href="data:image/png;base64,{image_data.decode()}" />'
+    )
+
+    outfile.write("</svg>")
+
+
 if __name__ == "__main__":
     # use all the threads
     torch.set_num_threads(os.cpu_count())
     torch.set_num_interop_threads(os.cpu_count())
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.force_cpu:
+        device = torch.device("cpu")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # default imgnet transforms
     tfms = transforms.Compose(
@@ -282,7 +311,7 @@ if __name__ == "__main__":
             linear_to_conv2d(learn.attention[2]),
         )
         .eval()
-        .cuda()
+        .to(device)
     )
 
     score = (
@@ -294,7 +323,7 @@ if __name__ == "__main__":
             linear_to_conv2d(learn.head[3]),
         )
         .eval()
-        .cuda()
+        .to(device)
     )
 
     # we operate in two steps: we first collect all attention values / scores,
@@ -338,16 +367,18 @@ if __name__ == "__main__":
             step = slide_array.shape[1] // no_slices
             slices = []
             for slice_i in range(no_slices):
-                x = tfms(slide_array[:, slice_i * step : (slice_i + 1) * step, :])
+                slide_im_rgba = tfms(
+                    slide_array[:, slice_i * step : (slice_i + 1) * step, :]
+                )
                 with torch.inference_mode():
-                    res = base_model(x.unsqueeze(0).cuda())
+                    res = base_model(slide_im_rgba.unsqueeze(0).to(device))
                     slices.append(res.detach().cpu())
             feat_t = torch.concat(slices, 3).squeeze()
             # save the features (with compression)
             with ZstdFile(feats_pt, mode="wb") as fp:
                 torch.save(feat_t, fp)
 
-        feat_t = feat_t.cuda()
+        feat_t = feat_t.to(device)
         # pool features, but use gaussian blur instead of avg pooling to reduce artifacts
         if args.blur_kernel_size:
             feat_t = transforms.functional.gaussian_blur(
@@ -356,9 +387,15 @@ if __name__ == "__main__":
 
         # calculate attention / classification scores according to the MIL model
         with torch.inference_mode():
+            scores = torch.softmax(learn.model(feat_t), -1).squeeze().cpu()
             att_map = att(feat_t).squeeze().cpu()
             score_map = score(feat_t.unsqueeze(0)).squeeze()
             score_map = torch.softmax(score_map, 0).cpu()
+
+        slide_outdir = args.output_path / slide_name
+        slide_outdir.mkdir(parents=True, exist_ok=True)
+        with open(slide_outdir/"prediction.json", "w") as outfile:
+            json.dump({"score": float(scores[true_class_idx])}, outfile)
 
         # compute foreground mask
         mask = (
@@ -402,26 +439,16 @@ if __name__ == "__main__":
         slide_outdir = args.output_path / slide_name
 
         slide_im = PIL.Image.open(slide_cache_dir / "slide.jpg")
-        if not (slide_outdir / "slide.jpg").exists():
-            shutil.copyfile(slide_cache_dir / "slide.jpg", slide_outdir / "slide.jpg")
+
+        # write image pyramid
+        creator = deepzoom.ImageCreator()
+        creator.create(slide_im, slide_outdir / "slide_pyramid.dzi")
 
         mask = masks[slide_name]
 
         # attention map
         att_map = (attention_maps[slide_name] - att_lower) / (att_upper - att_lower)
         att_map = att_map.clamp(0, 1)
-
-        # bare attention
-        im = plt.get_cmap(args.att_cmap)(att_map)
-        im[:, :, 3] = mask
-        PIL.Image.fromarray(np.uint8(im * 255.0)).save(slide_outdir / "attention.png")
-        # attention map (blended with slide)
-        im[:, :, 3] *= args.att_alpha
-        map_im = PIL.Image.fromarray(np.uint8(im * 255.0))
-        map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
-        x = slide_im.copy().convert("RGBA")
-        x.paste(map_im, mask=map_im)
-        x.convert("RGB").save(slide_outdir / "attention_overlayed.jpg")
 
         # score map
         scaled_score_map = (
@@ -433,9 +460,5 @@ if __name__ == "__main__":
         im = plt.get_cmap(args.score_cmap)(scaled_score_map)
         im[:, :, 3] = att_map * mask * args.score_alpha
         map_im = PIL.Image.fromarray(np.uint8(im * 255.0))
-        map_im.save(slide_outdir / "map.png")
-        # overlayed onto slide
-        map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
-        x = slide_im.copy().convert("RGBA")
-        x.paste(map_im, mask=map_im)
-        x.convert("RGB").save(slide_outdir / "map_overlayed.jpg")
+        with open(slide_outdir / "map.svg", "w") as outfile:
+            write_as_svg(map_im, slide_im.size, outfile)
