@@ -2,14 +2,13 @@
 import argparse
 import base64
 import io
-from pathlib import Path
-import sys
-from typing import Dict, Tuple
-from concurrent import futures
-from urllib.parse import urlparse
-import warnings
 import json
-
+import sys
+import warnings
+from concurrent import futures
+from pathlib import Path
+from typing import Dict, Tuple
+from urllib.parse import urlparse
 
 # loading all the below packages takes quite a bit of time, so get cli parsing
 # out of the way beforehand so it's more responsive in case of errors
@@ -152,21 +151,22 @@ if __name__ == "__main__":
 
 if (p := "./RetCCL") not in sys.path:
     sys.path = [p] + sys.path
-import ResNet
-
-import torch.nn as nn
-import torch
-from torchvision import transforms
 import os
-from matplotlib import pyplot as plt
-import openslide
-from tqdm import tqdm
-import numpy as np
-from fastai.vision.all import load_learner
-from pyzstd import ZstdFile
-import PIL
-from sftp import get_wsi
+
 import deepzoom
+import numpy as np
+import openslide
+import PIL
+import ResNet
+import torch
+import torch.nn as nn
+from fastai.vision.all import load_learner
+from matplotlib import pyplot as plt
+from pyzstd import ZstdFile
+from torchvision import transforms
+from tqdm import tqdm
+
+from sftp import get_wsi
 
 # supress DecompressionBombWarning: yes, our files are really that big (‘-’*)
 PIL.Image.MAX_IMAGE_PIXELS = None
@@ -371,9 +371,11 @@ if __name__ == "__main__":
                     slide_array[:, slice_i * step : (slice_i + 1) * step, :]
                 )
                 with torch.inference_mode():
-                    res = base_model(slide_im_rgba.unsqueeze(0).to(device))
+                    res = base_model(
+                        slide_im_rgba.unsqueeze(0).to(device)
+                    )  # dims: [bs=1, feat, y, x]
                     slices.append(res.detach().cpu())
-            feat_t = torch.concat(slices, 3).squeeze()
+            feat_t = torch.concat(slices, 3).squeeze(0)  # dims: [feat, y, x]
             # save the features (with compression)
             with ZstdFile(feats_pt, mode="wb") as fp:
                 torch.save(feat_t, fp)
@@ -387,14 +389,25 @@ if __name__ == "__main__":
 
         # calculate attention / classification scores according to the MIL model
         with torch.inference_mode():
-            scores = torch.softmax(learn.model(feat_t), -1).squeeze().cpu()
-            att_map = att(feat_t).squeeze().cpu()
+            batch = (
+                # We subsample so the number of tiles is of the same order of
+                # magnitude as during training (where there is an avg-pooling
+                # layer over 7x7 squares of features)
+                feat_t[:, ::7, ::7]
+                .reshape(1, feat_t.size(0), -1)  # Make into batch
+                .permute(0, 2, 1)  # dims: [bs=1, elem, feat]
+            )
+            logits = learn.model.to(device)(
+                batch, lens=torch.tensor([[batch.size(1)]], device=device)
+            ).squeeze(0)
+            scores = torch.softmax(logits, 0).cpu()
+            att_map = att(feat_t).squeeze(0).cpu()
             score_map = score(feat_t.unsqueeze(0)).squeeze()
             score_map = torch.softmax(score_map, 0).cpu()
 
         slide_outdir = args.output_path / slide_name
         slide_outdir.mkdir(parents=True, exist_ok=True)
-        with open(slide_outdir/"prediction.json", "w") as outfile:
+        with open(slide_outdir / "prediction.json", "w") as outfile:
             json.dump({"score": float(scores[true_class_idx])}, outfile)
 
         # compute foreground mask
