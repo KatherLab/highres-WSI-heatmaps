@@ -1,11 +1,11 @@
 DeepZoomTools @ git+https://github.com/openzoom/deepzoom.py@dafac125bd8e7ce712abe28c85acdda91f548aeb
-Pillow~=9.1
 fastai~=2.7
-marugoto @ git+https://github.com/katherlab/marugoto@111d930c37e72c80645b80a60f5024bf3293fd5d
-matplotlib~=3.6
-openslide-python~=1.2
-paramiko~=2.12
-pyzstd~=0.15
-torchvision~=0.14
-torch~=1.12
-tqdm~=4.63
+marugoto @ git+https://github.com/KatherLab/marugoto@e05ab1a372d82acbe0db2226c9a2bff7416be83a
+matplotlib~=3.8
+openslide-python~=1.3
+paramiko~=3.4
+Pillow~=9.5
+pyzstd~=0.15.9
+torch~=2.1
+torchvision~=0.16
+tqdm~=4.66
