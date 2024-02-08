@@ -3,6 +3,7 @@ import argparse
 import base64
 import io
 import json
+import shutil
 import sys
 import warnings
 from concurrent import futures
@@ -452,6 +453,8 @@ if __name__ == "__main__":
         slide_outdir = args.output_path / slide_name
 
         slide_im = PIL.Image.open(slide_cache_dir / "slide.jpg")
+        if not (slide_outdir / "slide.jpg").exists():
+            shutil.copyfile(slide_cache_dir / "slide.jpg", slide_outdir / "slide.jpg")
 
         # write image pyramid
         creator = deepzoom.ImageCreator()
@@ -462,6 +465,18 @@ if __name__ == "__main__":
         # attention map
         att_map = (attention_maps[slide_name] - att_lower) / (att_upper - att_lower)
         att_map = att_map.clamp(0, 1)
+
+        # bare attention
+        im = plt.get_cmap(args.att_cmap)(att_map)
+        im[:, :, 3] = mask
+        PIL.Image.fromarray(np.uint8(im * 255.0)).save(slide_outdir / "attention.png")
+        # attention map (blended with slide)
+        im[:, :, 3] *= args.att_alpha
+        map_im = PIL.Image.fromarray(np.uint8(im * 255.0))
+        map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
+        x = slide_im.copy().convert("RGBA")
+        x.paste(map_im, mask=map_im)
+        x.convert("RGB").save(slide_outdir / "attention_overlayed.jpg")
 
         # score map
         scaled_score_map = (
@@ -475,3 +490,9 @@ if __name__ == "__main__":
         map_im = PIL.Image.fromarray(np.uint8(im * 255.0))
         with open(slide_outdir / "map.svg", "w") as outfile:
             write_as_svg(map_im, slide_im.size, outfile)
+
+        # overlayed onto slide
+        map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
+        x = slide_im.copy().convert("RGBA")
+        x.paste(map_im, mask=map_im)
+        x.convert("RGB").save(slide_outdir / "map_overlayed.jpg")
