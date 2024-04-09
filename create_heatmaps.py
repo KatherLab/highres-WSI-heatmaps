@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from swin_transformer import swin_tiny_patch4_window7_224, ConvStem
 import argparse
 import io
 from pathlib import Path
@@ -105,7 +106,7 @@ if __name__ == "__main__":
         "--att-cmap",
         metavar="CMAP",
         type=str,
-        default="magma",
+        default="YlOrRd",
         help="Color map to use for the attention heatmap.",
     )
     colormap_group.add_argument(
@@ -218,30 +219,6 @@ def load_slide(slide: openslide.OpenSlide, target_mpp: float = 256 / 224) -> np.
     return im
 
 
-def batch1d_to_batch_2d(batch1d):
-    batch2d = nn.BatchNorm2d(batch1d.num_features)
-    batch2d.state_dict = batch1d.state_dict
-    return batch2d
-
-
-def dropout1d_to_dropout2d(dropout1d):
-    return nn.Dropout2d(dropout1d.p)
-
-
-def linear_to_conv2d(linear):
-    """Converts a fully connected layer to a 1x1 Conv2d layer with the same weights."""
-    conv = nn.Conv2d(
-        in_channels=linear.in_features, out_channels=linear.out_features, kernel_size=1
-    )
-    conv.load_state_dict(
-        {
-            "weight": linear.weight.view(conv.weight.shape),
-            "bias": linear.bias.view(conv.bias.shape),
-        }
-    )
-    return conv
-
-
 if __name__ == "__main__":
     # use all the threads
     torch.set_num_threads(os.cpu_count() or 1)
@@ -255,24 +232,22 @@ if __name__ == "__main__":
     # default imgnet transforms
     tfms = transforms.Compose(
         [
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            transforms.ToPILImage(),
+            transforms.Resize((224, 224)),
+            transforms.ToTensor()
         ]
     )
 
     # load base fully convolutional model (w/o pooling / flattening or head)
     # In this case we're loading the xiyue wang RetCLL model, change this bit for other networks
-    import ResNet
+    
 
-    base_model = ResNet.resnet50(
-        num_classes=128, mlp=False, two_branch=False, normlinear=True
-    )
-    pretext_model = torch.load("./xiyue-wang.pth", map_location=device)
-    base_model.avgpool = nn.Identity()
-    base_model.flatten = nn.Identity()
-    base_model.fc = nn.Identity()
-    base_model.load_state_dict(pretext_model, strict=True)
-    base_model = base_model.eval().to(device)
+    base_model = swin_tiny_patch4_window7_224(embed_layer=ConvStem, pretrained=False)
+    base_model.head = nn.Identity()
+
+    ctranspath = torch.load("./ctranspath.pth", map_location=torch.device('cpu'))
+    base_model.load_state_dict(ctranspath['model'], strict=True)
+    base_model = base_model.eval().to(torch.device("cuda"))
 
     # transform MIL model into fully convolutional equivalent
     learn = load_learner(args.model_path)
@@ -281,14 +256,15 @@ if __name__ == "__main__":
         f"{args.true_class} not a target of {args.model_path}! "
         f"(Did you mean any of {list(classes)}?)"
     )
+
     true_class_idx = (classes == args.true_class).argmax()
     att = (
         nn.Sequential(
-            linear_to_conv2d(learn.encoder[0]),
+            (learn.encoder[0]),
             nn.ReLU(),
-            linear_to_conv2d(learn.attention[0]),
+            (learn.attention[0]),
             nn.Tanh(),
-            linear_to_conv2d(learn.attention[2]),
+            (learn.attention[2]),
         )
         .eval()
         .to(device)
@@ -296,11 +272,11 @@ if __name__ == "__main__":
 
     score = (
         nn.Sequential(
-            linear_to_conv2d(learn.encoder[0]),
+            (learn.encoder[0]),
             nn.ReLU(),
-            batch1d_to_batch_2d(learn.head[1]),
-            dropout1d_to_dropout2d(learn.head[2]),
-            linear_to_conv2d(learn.head[3]),
+            (learn.head[1]),
+            (learn.head[2]),
+            (learn.head[3]),
         )
         .eval()
         .to(device)
@@ -316,6 +292,19 @@ if __name__ == "__main__":
     print("Extracting features, attentions and scores...")
     for slide_url in (progress := tqdm(args.slide_urls, leave=False)):
         slide_name = Path(slide_url.path).stem
+        slide_cache_dir = args.cache_dir / slide_name
+        slide_outdir = args.output_path / slide_name
+        toptiles_outdir = slide_outdir / "toptiles"
+        slide_outdir.mkdir(parents=True, exist_ok=True)
+        toptiles_outdir.mkdir(parents=True, exist_ok=True)
+
+        progress.set_description(slide_name)
+        slide_outdir = args.output_path / slide_name
+
+        slide_im = PIL.Image.open(slide_cache_dir / "slide.jpg")
+        if not (slide_outdir / "slide.jpg").exists():
+            shutil.copyfile(slide_cache_dir / "slide.jpg", slide_outdir / "slide.jpg")
+        
         progress.set_description(slide_name)
         slide_cache_dir = args.cache_dir / slide_name
         slide_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -339,72 +328,112 @@ if __name__ == "__main__":
         elif (slide_cache_dir / "feats.pt").exists():
             feat_t = torch.load(slide_cache_dir / "feats.pt").float()
         else:
-            max_slice_size = 0xA800000  # experimentally determined
-            # ceil(pixels/max_slice_size)
-            no_slices = (
-                np.prod(slide_array.shape) + max_slice_size - 1
-            ) // max_slice_size
-            step = slide_array.shape[1] // no_slices
-            slices = []
-            for slice_i in range(no_slices):
-                x = tfms(slide_array[:, slice_i * step : (slice_i + 1) * step, :])
-                with torch.inference_mode():
-                    res = base_model(x.unsqueeze(0).to(device))
-                    slices.append(res.detach().cpu())
-            feat_t = torch.concat(slices, 3).squeeze()
-            # save the features (with compression)
+            tile_size = (224, 224)
+            stride = tile_size[0]  # You can adjust the stride if needed
+
+            # Determine the number of tiles in each dimension
+            num_tiles_x = slide_array.shape[1] // tile_size[0]
+            num_tiles_y = slide_array.shape[0] // tile_size[1]
+
+            tiles = []
+            for y in range(num_tiles_y):
+                for x in range(num_tiles_x):
+                    start_row = y * tile_size[1]
+                    end_row = (y + 1) * tile_size[1]
+                    start_col = x * tile_size[0]
+                    end_col = (x + 1) * tile_size[0]
+
+                    tile = slide_array[start_row:end_row, start_col:end_col, :]
+
+                    # Ensure the tile is of the desired size (224, 224)
+                    if tile.shape[:2] == tile_size:
+                        resized_tile = tfms(tile)
+                        
+                        with torch.inference_mode():
+                            res = base_model(resized_tile.unsqueeze(0).to(device))
+                            tiles.append(res.detach().cpu())
+
+            # Concatenate the extracted features
+            feat_t = torch.cat(tiles, 0)
+
             with ZstdFile(feats_pt, mode="wb") as fp:
                 torch.save(feat_t, fp)  # type: ignore
 
         feat_t = feat_t.to(device)
         # pool features, but use gaussian blur instead of avg pooling to reduce artifacts
-        if args.blur_kernel_size:
-            feat_t = transforms.functional.gaussian_blur(
-                feat_t, kernel_size=args.blur_kernel_size
-            )
-
+        # if args.blur_kernel_size:
+        #     feat_t = transforms.functional.gaussian_blur(
+        #         feat_t, kernel_size=args.blur_kernel_size
+        #     )
         # calculate attention / classification scores according to the MIL model
         with torch.inference_mode():
             att_map = att(feat_t).squeeze().cpu()
-            score_map = score(feat_t.unsqueeze(0)).squeeze()
-            score_map = torch.softmax(score_map, 0).cpu()
+            score_map = score(feat_t).squeeze()
+            score_map = torch.softmax(score_map, 1).cpu()
 
+        tile_size = (224, 224)
+        stride = tile_size[0]  # You can adjust the stride if needed
+
+        # Determine the number of tiles in each dimension
+        num_tiles_x = slide_array.shape[1] // tile_size[0]
+        num_tiles_y = slide_array.shape[0] // tile_size[1]
+
+        att_full_map = torch.zeros((slide_array.shape[0], slide_array.shape[1]))
+        score_full_map = torch.zeros((slide_array.shape[0], slide_array.shape[1], len(classes)))
+        i=0
+        top_n_att = np.argsort(att_map)[-10:]
+        for y in range(num_tiles_y):
+            for x in range(num_tiles_x):
+                start_row = y * tile_size[1]
+                end_row = (y + 1) * tile_size[1]
+                start_col = x * tile_size[0]
+                end_col = (x + 1) * tile_size[0]
+                        # Check if the current tile index is in the top N attention scores
+                if i in top_n_att:
+                    # Extract the tile from the original slide image
+                    tile = slide_im.crop((start_col, start_row, end_col, end_row))
+                    # Save the tile as a separate image
+                    tile.save(toptiles_outdir / f"{att_map[i]:.2f}_top_tile_{start_col}_{start_row}.png")
+                att_full_map[start_row:end_row, start_col:end_col] = att_map[i]
+                for c in range(len(classes)):
+                    score_full_map[start_row:end_row, start_col:end_col, c] = score_map[i][c]
+                i += 1
+        
         # compute foreground mask
         mask = (
             np.array(
                 PIL.Image.fromarray(slide_array)
-                .resize(att_map.shape[::-1])
+                .resize(att_full_map.shape[::-1])
                 .convert("L")
             )
             < args.mask_threshold
         )
 
-        attention_maps[slide_name] = att_map
-        score_maps[slide_name] = score_map
+        attention_maps[slide_name] = att_full_map.cpu()    
+        score_maps[slide_name] = score_full_map.cpu()
         masks[slide_name] = mask
 
     # now we can use all of the features to calculate the scaling factors
-    all_attentions = torch.cat(
-        [attention_maps[s].view(-1)[masks[s].reshape(-1)] for s in score_maps.keys()]
-    )
-    att_lower = all_attentions.quantile(args.att_lower_threshold)
-    att_upper = all_attentions.quantile(args.att_upper_threshold)
-
+    all_attentions = torch.cat([attention_maps[s].view(-1)[masks[s].reshape(-1)] for s in score_maps.keys()])
+    att_lower = torch.unique(all_attentions).quantile(args.att_lower_threshold)
+    att_upper = torch.unique(all_attentions).quantile(args.att_upper_threshold)
     all_true_scores = torch.cat(
         [
             # mask out background scores, then linearize them
-            score_maps[s][true_class_idx].view(-1)[masks[s].reshape(-1)]
+            score_maps[s][:,:,true_class_idx].view(-1)[masks[s].reshape(-1)]
             for s in score_maps.keys()
         ]
     )
+
     centered_score = all_true_scores - (1 / len(classes))
-    scale_factor = torch.quantile(centered_score.abs(), args.score_threshold) * 2
+    scale_factor = torch.quantile(torch.unique(centered_score).abs(), args.score_threshold) * 2
 
     print("Writing heatmaps...")
     for slide_url in (progress := tqdm(args.slide_urls, leave=False)):
         slide_name = Path(slide_url.path).stem
         slide_cache_dir = args.cache_dir / slide_name
         slide_outdir = args.output_path / slide_name
+
         slide_outdir.mkdir(parents=True, exist_ok=True)
 
         progress.set_description(slide_name)
@@ -423,7 +452,9 @@ if __name__ == "__main__":
         # bare attention
         im = plt.get_cmap(args.att_cmap)(att_map)
         im[:, :, 3] = mask
-        PIL.Image.fromarray(np.uint8(im * 255.0)).save(slide_outdir / "attention.png")
+        map_im = PIL.Image.fromarray(np.uint8(im * 255.0))
+        map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
+        map_im.save(slide_outdir / "attention.png")
         # attention map (blended with slide)
         im[:, :, 3] *= args.att_alpha
         map_im = PIL.Image.fromarray(np.uint8(im * 255.0))
@@ -434,7 +465,7 @@ if __name__ == "__main__":
 
         # score map
         scaled_score_map = (
-            score_maps[slide_name][true_class_idx] - 1 / len(classes)
+            score_maps[slide_name][:,:,true_class_idx] - 1 / len(classes)
         ) / scale_factor + 1 / len(classes)
         scaled_score_map = (scaled_score_map * mask).clamp(0, 1)
 
@@ -442,9 +473,9 @@ if __name__ == "__main__":
         im = plt.get_cmap(args.score_cmap)(scaled_score_map)
         im[:, :, 3] = att_map * mask * args.score_alpha
         map_im = PIL.Image.fromarray(np.uint8(im * 255.0))
+        map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
         map_im.save(slide_outdir / "map.png")
         # overlayed onto slide
-        map_im = map_im.resize(slide_im.size, PIL.Image.Resampling.NEAREST)
         x = slide_im.copy().convert("RGBA")
         x.paste(map_im, mask=map_im)
         x.convert("RGB").save(slide_outdir / "map_overlayed.jpg")

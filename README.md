@@ -1,7 +1,9 @@
-# High-Resolution Heatmaps for Marugoto MIL Models
+# High-Resolution Heatmaps for Marugoto MIL Models with CTransPath inputs
+Clone the repository and [download "ctranspath.pth"](https://drive.google.com/u/0/uc?id=1DoDx_70_TLj98gTf6YTXnu4tFhsFocDX&export=download) and save it within the same directory where "create_heatmaps.py" is stored.
 
-## Options
 
+## Creating heatmaps and top-attention tiles
+Make sure the environment is [correctly installed and activated](https://github.com/KatherLab/marugoto/blob/main/Documentation.md) before running the following command: 
 ```sh
 create_heatmaps.py [-h] -m MODEL_PATH -o OUTPUT_PATH -t TRUE_CLASS
                    [--no-pool]
@@ -14,7 +16,7 @@ create_heatmaps.py [-h] -m MODEL_PATH -o OUTPUT_PATH -t TRUE_CLASS
                    SLIDE [SLIDE ...]
 ```
 
-Create heatmaps for MIL models.
+Create heatmaps for MIL models with CTransPath inputs.
 
 | Positional Arguments | Description |
 |----------------------|-------------|
