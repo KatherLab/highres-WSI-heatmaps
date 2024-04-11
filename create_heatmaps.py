@@ -297,26 +297,22 @@ if __name__ == "__main__":
         toptiles_outdir = slide_outdir / "toptiles"
         slide_outdir.mkdir(parents=True, exist_ok=True)
         toptiles_outdir.mkdir(parents=True, exist_ok=True)
-
-        progress.set_description(slide_name)
-        slide_outdir = args.output_path / slide_name
-
-        slide_im = PIL.Image.open(slide_cache_dir / "slide.jpg")
-        if not (slide_outdir / "slide.jpg").exists():
-            shutil.copyfile(slide_cache_dir / "slide.jpg", slide_outdir / "slide.jpg")
-        
-        progress.set_description(slide_name)
-        slide_cache_dir = args.cache_dir / slide_name
         slide_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        progress.set_description(slide_name)
+        progress.set_description(slide_name)
 
         # Load WSI as one image
         if (slide_jpg := slide_cache_dir / "slide.jpg").exists():
-            slide_array = np.array(PIL.Image.open(slide_jpg))
+            slide_im = PIL.Image.open(slide_jpg)
+            slide_array = np.array(slide_im)
         else:
             slide_path = get_wsi(slide_url, cache_dir=args.cache_dir)
             slide = openslide.OpenSlide(str(slide_path))
             slide_array = load_slide(slide)
-            PIL.Image.fromarray(slide_array).save(slide_jpg)
+            slide_im = PIL.Image.fromarray(slide_array)
+            slide_im.save(slide_jpg)
+
 
         # pass the WSI through the fully convolutional network'
         # since our RAM is still too small, we do this in two steps
