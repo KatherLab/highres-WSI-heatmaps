@@ -360,7 +360,7 @@ if __name__ == "__main__":
         elif (slide_cache_dir / "feats.pt").exists():
             feat_t = torch.load(slide_cache_dir / "feats.pt").float()
         else:
-            max_slice_size = 0xA800000  # experimentally determined
+            max_slice_size = 1<<20  # experimentally determined
             # ceil(pixels/max_slice_size)
             no_slices = (
                 np.prod(slide_array.shape) + max_slice_size - 1
