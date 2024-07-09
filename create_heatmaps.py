@@ -49,7 +49,7 @@ if __name__ == "__main__":
         "--blur-kernel-size",
         metavar="SIZE",
         type=int,
-        default=15,
+        default=7,
         help="Size of gaussian pooling filter. 0 disables pooling.",
     )
     parser.add_argument(
